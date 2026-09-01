@@ -14,6 +14,8 @@ export type SceneLayer = {
     url?: string
     text?: string
     timezone?: string
+    fontFamily?: string
+    fontSize?: number
     fit?: 'cover' | 'contain'
     muted?: boolean
     loop?: boolean
