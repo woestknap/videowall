@@ -47,10 +47,11 @@ function Admin() {
   const [devices, setDevices] = useState<Device[]>([])
   const [scenes, setScenes] = useState<Scene[]>([])
   const [activeWall, setActiveWall] = useState<string>('')
+  const [selectedSceneId, setSelectedSceneId] = useState<string>('')
   const [pin, setPin] = useState<string>('')
   const [notice, setNotice] = useState('')
 
-  const activeScene = scenes[0] ?? starterScene
+  const activeScene = scenes.find((scene) => scene.id === selectedSceneId) ?? scenes[0] ?? starterScene
   const selectedWall = walls.find((wall) => wall.id === activeWall)
 
   useEffect(() => {
@@ -62,6 +63,7 @@ function Admin() {
       ])
       setWalls(wallData ?? [])
       setScenes((sceneData ?? []).map((scene) => ({ ...scene, layers: scene.layers as SceneLayer[] })))
+      if (sceneData?.[0]) setSelectedSceneId(sceneData[0].id)
       if (wallData?.[0]) setActiveWall(wallData[0].id)
     })()
   }, [])
@@ -99,7 +101,18 @@ function Admin() {
     if (!name) return
     const { data, error } = await supabase.from('scenes').insert({ name, layers: starterScene.layers, duration_seconds: 60 }).select('id,name,layers,duration_seconds').single()
     if (error) return setNotice(error.message)
-    setScenes((existing) => [...existing, { ...data, layers: data.layers as SceneLayer[] }])
+    const newScene = { ...data, layers: data.layers as SceneLayer[] }
+    setScenes((existing) => [...existing, newScene]); setSelectedSceneId(newScene.id)
+  }
+
+  function updateScene(next: Scene) {
+    setScenes((existing) => existing.map((scene) => scene.id === next.id ? next : scene))
+  }
+
+  async function saveScene(scene: Scene) {
+    if (!supabase || scene.id === 'preview') return
+    const { error } = await supabase.from('scenes').update({ name: scene.name, layers: scene.layers, duration_seconds: scene.duration_seconds }).eq('id', scene.id)
+    setNotice(error ? error.message : `${scene.name} saved.`)
   }
 
   return <main className="admin-shell">
@@ -116,12 +129,39 @@ function Admin() {
       <article className="panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>
         <div className="wall-preview">{devices.length ? devices.map((device, index) => <div className="screen-card" key={device.id}><span>{index + 1}</span><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small></div>) : <p>Pair a Pi to start building your wall.</p>}</div>
       </article>
-      <article className="panel"><div className="panel-heading"><div><p className="eyebrow">NOW SHOWING</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} /></article>
+      <article className="panel"><div className="panel-heading"><div><p className="eyebrow">SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} /></article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>
-        {scenes.length ? scenes.map((scene) => <div className="scene-row" key={scene.id}><span>{scene.name}</span><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><button onClick={() => void publish(scene)}>Go live</button></div>) : <p>Create your first reusable scene. The starter preview demonstrates a text and clock layer.</p>}
+        {scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><button onClick={() => void publish(scene)}>Go live</button></div>) : <p>Create your first reusable scene.</p>}
       </article>
+      {activeScene.id !== 'preview' && <SceneEditor scene={activeScene} onChange={updateScene} onSave={() => void saveScene(activeScene)} />}
     </section>
   </main>
+}
+
+function SceneEditor({ scene, onChange, onSave }: { scene: Scene; onChange: (scene: Scene) => void; onSave: () => void }) {
+  function changeLayer(index: number, change: Partial<SceneLayer>) {
+    const layers = scene.layers.map((layer, current) => current === index ? { ...layer, ...change } : layer)
+    onChange({ ...scene, layers })
+  }
+  function content(index: number, key: 'text' | 'url' | 'timezone', value: string) {
+    const layer = scene.layers[index]
+    changeLayer(index, { content: { ...layer.content, [key]: value } })
+  }
+  function addLayer(type: SceneLayer['type']) {
+    const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], x: 10, y: 10, width: 80, height: 24, zIndex: scene.layers.length + 1, content: type === 'clock' ? { timezone: 'Europe/Amsterdam' } : type === 'text' ? { text: 'New text' } : { url: '' } }
+    onChange({ ...scene, layers: [...scene.layers, layer] })
+  }
+  function removeLayer(index: number) { onChange({ ...scene, layers: scene.layers.filter((_layer, current) => current !== index) }) }
+  return <article className="panel scene-editor"><div className="panel-heading"><div><p className="eyebrow">EDITING SCENE</p><h2>Layers</h2></div><button onClick={onSave}>Save scene</button></div>
+    <div className="scene-basics"><label>Name<input value={scene.name} onChange={(event) => onChange({ ...scene, name: event.target.value })} /></label><label>Cycle duration (seconds)<input type="number" min="1" value={scene.duration_seconds} onChange={(event) => onChange({ ...scene, duration_seconds: Math.max(1, Number(event.target.value)) })} /></label></div>
+    <div className="add-layer"><span>Add a layer</span><button className="secondary" onClick={() => addLayer('text')}>Text</button><button className="secondary" onClick={() => addLayer('clock')}>Clock</button><button className="secondary" onClick={() => addLayer('image')}>Image URL</button><button className="secondary" onClick={() => addLayer('video')}>Video URL</button></div>
+    {scene.layers.map((layer, index) => <div className="layer-editor" key={layer.id}><select value={layer.type} onChange={(event) => changeLayer(index, { type: event.target.value as SceneLayer['type'] })}><option value="text">Text</option><option value="clock">Clock</option><option value="image">Image</option><option value="video">Video</option></select>
+      {layer.type === 'text' && <label>Text<input value={layer.content.text ?? ''} onChange={(event) => content(index, 'text', event.target.value)} /></label>}
+      {(layer.type === 'image' || layer.type === 'video') && <label>Media URL<input type="url" placeholder="https://…" value={layer.content.url ?? ''} onChange={(event) => content(index, 'url', event.target.value)} /></label>}
+      {layer.type === 'clock' && <label>Timezone<input value={layer.content.timezone ?? ''} onChange={(event) => content(index, 'timezone', event.target.value)} /></label>}
+      <label>X %<input type="number" value={layer.x} onChange={(event) => changeLayer(index, { x: Number(event.target.value) })} /></label><label>Y %<input type="number" value={layer.y} onChange={(event) => changeLayer(index, { y: Number(event.target.value) })} /></label><label>Width %<input type="number" value={layer.width} onChange={(event) => changeLayer(index, { width: Number(event.target.value) })} /></label><label>Height %<input type="number" value={layer.height} onChange={(event) => changeLayer(index, { height: Number(event.target.value) })} /></label><button className="danger" onClick={() => removeLayer(index)}>Remove</button>
+    </div>)}
+  </article>
 }
 
 function Player() {
