@@ -1,4 +1,4 @@
-export type LayerType = 'clock' | 'video' | 'image' | 'text'
+export type LayerType = 'clock' | 'video' | 'image' | 'text' | 'ticker'
 
 export type SceneLayer = {
   id: string

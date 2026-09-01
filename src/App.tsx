@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type PointerEvent } from 'react'
 import { isConfigured, supabase } from './lib/supabase'
 import type { Device, Scene, SceneLayer, Wall } from './types'
 
@@ -12,10 +12,11 @@ const starterScene: Scene = {
 
 function App() {
   const player = new URLSearchParams(location.search).get('player') === '1'
-  return player ? <Player /> : <AdminGate />
+  const editorSceneId = new URLSearchParams(location.search).get('editor')
+  return player ? <Player /> : <AdminGate editorSceneId={editorSceneId} />
 }
 
-function AdminGate() {
+function AdminGate({ editorSceneId }: { editorSceneId: string | null }) {
   const [ready, setReady] = useState(false)
   const [signedIn, setSignedIn] = useState(false)
   useEffect(() => {
@@ -26,7 +27,7 @@ function AdminGate() {
   }, [])
   if (!isConfigured) return <Admin />
   if (!ready) return <main className="player-message">Loading Videowall…</main>
-  return signedIn ? <Admin /> : <SignIn />
+  return signedIn ? (editorSceneId ? <SceneEditorPage sceneId={editorSceneId} /> : <Admin />) : <SignIn />
 }
 
 function SignIn() {
@@ -131,9 +132,8 @@ function Admin() {
       </article>
       <article className="panel"><div className="panel-heading"><div><p className="eyebrow">SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} /></article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>
-        {scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><button onClick={() => void publish(scene)}>Go live</button></div>) : <p>Create your first reusable scene.</p>}
+        {scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button></div>) : <p>Create your first reusable scene.</p>}
       </article>
-      {activeScene.id !== 'preview' && <SceneEditor scene={activeScene} onChange={updateScene} onSave={() => void saveScene(activeScene)} />}
     </section>
   </main>
 }
@@ -162,6 +162,66 @@ function SceneEditor({ scene, onChange, onSave }: { scene: Scene; onChange: (sce
       <label>X %<input type="number" value={layer.x} onChange={(event) => changeLayer(index, { x: Number(event.target.value) })} /></label><label>Y %<input type="number" value={layer.y} onChange={(event) => changeLayer(index, { y: Number(event.target.value) })} /></label><label>Width %<input type="number" value={layer.width} onChange={(event) => changeLayer(index, { width: Number(event.target.value) })} /></label><label>Height %<input type="number" value={layer.height} onChange={(event) => changeLayer(index, { height: Number(event.target.value) })} /></label><button className="danger" onClick={() => removeLayer(index)}>Remove</button>
     </div>)}
   </article>
+}
+
+function SceneEditorPage({ sceneId }: { sceneId: string }) {
+  const [scene, setScene] = useState<Scene | null>(null)
+  const [selectedId, setSelectedId] = useState<string>('')
+  const [notice, setNotice] = useState('')
+  const [drag, setDrag] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null)
+
+  useEffect(() => {
+    if (!supabase) return
+    void supabase.from('scenes').select('id,name,layers,duration_seconds').eq('id', sceneId).single().then(({ data, error }) => {
+      if (error) return setNotice(error.message)
+      const loaded = { ...data, layers: data.layers as SceneLayer[] }
+      setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '')
+    })
+  }, [sceneId])
+
+  if (!scene) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
+  const currentScene = scene
+  const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
+  function updateLayer(id: string, change: Partial<SceneLayer>) { setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) }) }
+  function updateContent(key: 'text' | 'url' | 'timezone', value: string) { if (selected) updateLayer(selected.id, { content: { ...selected.content, [key]: value } }) }
+  function addLayer(type: SceneLayer['type']) {
+    const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], x: 10, y: 10, width: type === 'ticker' ? 80 : 45, height: type === 'video' || type === 'image' ? 55 : 20, zIndex: currentScene.layers.length + 1, content: type === 'clock' ? { timezone: 'Europe/Amsterdam' } : type === 'ticker' ? { text: 'Your news ticker goes here' } : type === 'text' ? { text: 'New text' } : { url: '' } }
+    setScene({ ...currentScene, layers: [...currentScene.layers, layer] }); setSelectedId(layer.id)
+  }
+  function removeSelected() { if (!selected) return; setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
+  async function save() {
+    if (!supabase) return
+    const { error } = await supabase.from('scenes').update({ name: currentScene.name, layers: currentScene.layers, duration_seconds: currentScene.duration_seconds }).eq('id', currentScene.id)
+    setNotice(error ? error.message : 'Scene saved. Publish it from the dashboard when ready.')
+  }
+  async function upload(file: File) {
+    if (!supabase || !selected) return
+    setNotice('Uploading media…')
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-80)
+    const path = `${currentScene.id}/${crypto.randomUUID()}-${safeName}`
+    const { error } = await supabase.storage.from('media').upload(path, file, { cacheControl: '31536000', upsert: false })
+    if (error) return setNotice(error.message)
+    const { data } = supabase.storage.from('media').getPublicUrl(path)
+    updateLayer(selected.id, { content: { ...selected.content, url: data.publicUrl } }); setNotice('Uploaded. Save the scene to keep this layer.')
+  }
+  function startDrag(event: PointerEvent<HTMLDivElement>, layer: SceneLayer) {
+    const box = event.currentTarget.parentElement!.getBoundingClientRect()
+    setSelectedId(layer.id); setDrag({ id: layer.id, offsetX: ((event.clientX - box.left) / box.width) * 100 - layer.x, offsetY: ((event.clientY - box.top) / box.height) * 100 - layer.y })
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  function dragLayer(event: PointerEvent<HTMLDivElement>) {
+    if (!drag) return
+    const box = event.currentTarget.getBoundingClientRect(); const layer = currentScene.layers.find((item) => item.id === drag.id); if (!layer) return
+    const x = Math.max(0, Math.min(100 - layer.width, ((event.clientX - box.left) / box.width) * 100 - drag.offsetX)); const y = Math.max(0, Math.min(100 - layer.height, ((event.clientY - box.top) / box.height) * 100 - drag.offsetY))
+    updateLayer(drag.id, { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 })
+  }
+  return <main className="editor-page">
+    <header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><button onClick={() => void save()}>Save scene</button></header>
+    <div className="editor-layout"><aside className="editor-toolbar"><p className="eyebrow">ADD TO SCENE</p><button onClick={() => addLayer('text')}>T Text</button><button onClick={() => addLayer('clock')}>◷ Clock</button><button onClick={() => addLayer('ticker')}>↔ Ticker</button><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button><small>Click an item on the canvas to edit it. Drag items to position them.</small></aside>
+      <section className="editor-stage-wrap"><div className="editor-stage" onPointerMove={dragLayer} onPointerUp={() => setDrag(null)} onPointerCancel={() => setDrag(null)}>{currentScene.layers.map((layer) => <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex }} onPointerDown={(event) => startDrag(event, layer)}>{layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline /> : layer.type === 'video' ? <div className="media-placeholder">▶ Video source</div> : layer.type === 'clock' ? <Clock style={{}} timezone={layer.content.timezone} /> : layer.type === 'ticker' ? <div className="ticker-preview">{layer.content.text}</div> : <div className="text-preview">{layer.content.text}</div>}</div>)}</div><p className="canvas-hint">16:9 scene canvas · drag objects directly</p></section>
+      <aside className="inspector"><p className="eyebrow">{selected ? 'SELECTED LAYER' : 'INSPECTOR'}</p>{selected ? <><label>Type<select value={selected.type} onChange={(event) => updateLayer(selected.id, { type: event.target.value as SceneLayer['type'] })}><option value="text">Text</option><option value="clock">Clock</option><option value="ticker">Ticker</option><option value="image">Image</option><option value="video">Video</option></select></label>{(selected.type === 'text' || selected.type === 'ticker') && <label>Content<textarea value={selected.content.text ?? ''} onChange={(event) => updateContent('text', event.target.value)} /></label>}{selected.type === 'clock' && <label>Timezone<input value={selected.content.timezone ?? ''} onChange={(event) => updateContent('timezone', event.target.value)} /></label>}{(selected.type === 'image' || selected.type === 'video') && <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}<div className="position-grid">{(['x', 'y', 'width', 'height'] as const).map((key) => <label key={key}>{key}<input type="number" min="0" max="100" value={selected[key]} onChange={(event) => updateLayer(selected.id, { [key]: Number(event.target.value) })} /></label>)}</div><button className="danger" onClick={removeSelected}>Remove layer</button></> : <p>Select an item on the canvas to edit it.</p>}</aside>
+    </div>{notice && <p className="editor-notice">{notice}</p>}
+  </main>
 }
 
 function Player() {
@@ -209,6 +269,7 @@ function Layer({ layer }: { layer: SceneLayer }) {
   if (layer.type === 'video' && layer.content.url) return <video className="media-layer" style={style} src={layer.content.url} autoPlay muted={layer.content.muted !== false} loop={layer.content.loop !== false} playsInline />
   if (layer.type === 'image' && layer.content.url) return <img className="media-layer" style={style} src={layer.content.url} alt="" />
   if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} />
+  if (layer.type === 'ticker') return <div className="ticker-layer" style={style}><span>{layer.content.text}</span></div>
   return <div className="text-layer" style={style}>{layer.content.text}</div>
 }
 
