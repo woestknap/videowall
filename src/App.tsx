@@ -275,6 +275,22 @@ function Player() {
   const [wallDevices, setWallDevices] = useState<Device[]>([])
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
   const bestClockSample = useRef({ roundTripMs: Number.POSITIVE_INFINITY, receivedAt: 0 })
+  const targetServerOffsetMs = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!device) return
+    const correction = window.setInterval(() => {
+      const target = targetServerOffsetMs.current
+      if (target === null) return
+      setServerOffsetMs((current) => {
+        const difference = target - current
+        // Correct at 10 ms/second. This avoids a visible seconds jump when a
+        // network sample is late, while still following a corrected Pi clock.
+        return Math.abs(difference) < 1 ? target : current + Math.sign(difference) * Math.min(10, Math.abs(difference))
+      })
+    }, 1000)
+    return () => window.clearInterval(correction)
+  }, [device])
 
   useEffect(() => {
     const refresh = window.setTimeout(() => location.reload(), 6 * 60 * 60 * 1000)
@@ -296,8 +312,11 @@ function Player() {
         const sampleAge = receivedAt - bestClockSample.current.receivedAt
         // The shortest request is the least affected by network queueing. Refresh it periodically
         // so a Pi clock correction cannot leave the player using an old offset.
-        if (roundTripMs <= bestClockSample.current.roundTripMs + 12 || sampleAge > 30_000) {
-          setServerOffsetMs(new Date(data.server_now).getTime() - (startedAt + receivedAt) / 2)
+        if (roundTripMs < bestClockSample.current.roundTripMs - 10 || sampleAge > 30_000) {
+          const offset = new Date(data.server_now).getTime() - (startedAt + receivedAt) / 2
+          const firstSample = targetServerOffsetMs.current === null
+          targetServerOffsetMs.current = offset
+          if (firstSample) setServerOffsetMs(offset)
           bestClockSample.current = { roundTripMs, receivedAt }
         }
       }
@@ -367,17 +386,19 @@ function SyncedVideo({ style, src, muted, loop, serverOffsetMs, sceneStartedAtMs
 
 function Clock({ style, timezone, serverOffsetMs = 0 }: { style: CSSProperties; timezone?: string; serverOffsetMs?: number }) {
   const [now, setNow] = useState(() => Date.now() + serverOffsetMs)
+  const offsetRef = useRef(serverOffsetMs)
+  useEffect(() => { offsetRef.current = serverOffsetMs }, [serverOffsetMs])
   useEffect(() => {
     let timer = 0
     const tick = () => {
-      const adjustedNow = Date.now() + serverOffsetMs
+      const adjustedNow = Date.now() + offsetRef.current
       setNow(adjustedNow)
       // Every player schedules its next repaint at the same server-time second boundary.
       timer = window.setTimeout(tick, Math.max(12, 1000 - (adjustedNow % 1000) + 8))
     }
     tick()
     return () => window.clearTimeout(timer)
-  }, [serverOffsetMs])
+  }, [])
   return <time className="clock-layer" style={style}>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone }).format(new Date(now))}</time>
 }
 
