@@ -28,6 +28,8 @@ export type Scene = {
   name: string
   layers: SceneLayer[]
   duration_seconds: number
+  // Empty means every display on the wall participates in this scene.
+  device_ids?: string[]
 }
 
 export type Device = {
