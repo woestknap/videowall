@@ -166,6 +166,7 @@ function SceneEditor({ scene, onChange, onSave }: { scene: Scene; onChange: (sce
 
 function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [scene, setScene] = useState<Scene | null>(null)
+  const [devices, setDevices] = useState<Device[]>([])
   const [selectedId, setSelectedId] = useState<string>('')
   const [notice, setNotice] = useState('')
   const [drag, setDrag] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null)
@@ -178,9 +179,12 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
       setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '')
     })
   }, [sceneId])
+  useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height').order('layout_y').order('layout_x').then(({ data }) => setDevices(data ?? [])) }, [])
 
   if (!scene) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
   const currentScene = scene
+  const wallWidth = Math.max(1, ...devices.map((item) => (item.layout_x ?? 0) + (item.layout_width ?? 1)))
+  const wallHeight = Math.max(1, ...devices.map((item) => (item.layout_y ?? 0) + (item.layout_height ?? 1)))
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
   function updateLayer(id: string, change: Partial<SceneLayer>) { setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) }) }
   function updateContent(key: 'text' | 'url' | 'timezone' | 'fontFamily', value: string) { if (selected) updateLayer(selected.id, { content: { ...selected.content, [key]: value } }) }
@@ -191,6 +195,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   }
   function removeSelected() { if (!selected) return; setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
   function moveLayer(direction: 'up' | 'down') { if (!selected) return; const next = Math.max(1, selected.zIndex + (direction === 'up' ? 1 : -1)); updateLayer(selected.id, { zIndex: next }) }
+  function toggleTarget(deviceId: string) { if (!selected) return; const target = !selected.target.length ? devices.filter((item) => item.id !== deviceId).map((item) => item.id) : selected.target.includes(deviceId) ? selected.target.filter((id) => id !== deviceId) : [...selected.target, deviceId]; updateLayer(selected.id, { target }) }
   async function save() {
     if (!supabase) return
     const { error } = await supabase.from('scenes').update({ name: currentScene.name, layers: currentScene.layers, duration_seconds: currentScene.duration_seconds }).eq('id', currentScene.id)
@@ -220,9 +225,9 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   return <main className="editor-page">
     <header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><button onClick={() => void save()}>Save scene</button></header>
     <div className="editor-layout"><aside className="editor-toolbar"><p className="eyebrow">ADD TO SCENE</p><button onClick={() => addLayer('text')}>T Text</button><button onClick={() => addLayer('clock')}>◷ Clock</button><button onClick={() => addLayer('ticker')}>↔ Ticker</button><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button><small>Click an item on the canvas to edit it. Drag items to position them.</small></aside>
-      <section className="editor-stage-wrap"><div className="editor-stage" onPointerMove={dragLayer} onPointerUp={() => setDrag(null)} onPointerCancel={() => setDrag(null)}>{currentScene.layers.map((layer) => { const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }; return <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex }} onPointerDown={(event) => startDrag(event, layer)}>{layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline /> : layer.type === 'video' ? <div className="media-placeholder">▶ Video source</div> : layer.type === 'clock' ? <Clock style={{}} timezone={layer.content.timezone} /> : layer.type === 'ticker' ? <div className="ticker-preview" style={typography}>{layer.content.text}</div> : <div className="text-preview" style={typography}>{layer.content.text}</div>}</div> })}</div><p className="canvas-hint">16:9 scene canvas · drag objects directly</p></section>
+      <section className="editor-stage-wrap"><div className="editor-stage" onPointerMove={dragLayer} onPointerUp={() => setDrag(null)} onPointerCancel={() => setDrag(null)}>{devices.map((item) => <div className="device-mask" key={item.id} style={{ left: `${((item.layout_x ?? 0) / wallWidth) * 100}%`, top: `${((item.layout_y ?? 0) / wallHeight) * 100}%`, width: `${((item.layout_width ?? 1) / wallWidth) * 100}%`, height: `${((item.layout_height ?? 1) / wallHeight) * 100}%` }}><span>{item.name}</span></div>)}{currentScene.layers.map((layer) => { const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }; return <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex }} onPointerDown={(event) => startDrag(event, layer)}>{layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline /> : layer.type === 'video' ? <div className="media-placeholder">▶ Video source</div> : layer.type === 'clock' ? <Clock style={{}} timezone={layer.content.timezone} /> : layer.type === 'ticker' ? <div className="ticker-preview" style={typography}>{layer.content.text}</div> : <div className="text-preview" style={typography}>{layer.content.text}</div>}</div> })}</div><p className="canvas-hint">Each outlined area is a Pi display · wall layers span and crop across them</p></section>
       <aside className="inspector"><p className="eyebrow">{selected ? 'SELECTED LAYER' : 'INSPECTOR'}</p>{selected ? <><label>Type<select value={selected.type} onChange={(event) => updateLayer(selected.id, { type: event.target.value as SceneLayer['type'] })}><option value="text">Text</option><option value="clock">Clock</option><option value="ticker">Ticker</option><option value="image">Image</option><option value="video">Video</option></select></label>{(selected.type === 'text' || selected.type === 'ticker') && <><label>Content<textarea value={selected.content.text ?? ''} onChange={(event) => updateContent('text', event.target.value)} /></label><label>Font<select value={selected.content.fontFamily ?? "'Roboto', sans-serif"} onChange={(event) => updateContent('fontFamily', event.target.value)}><option value="'Roboto', sans-serif">Roboto</option><option value="'Space Grotesk', sans-serif">Space Grotesk</option><option value="'Source Serif 4', serif">Source Serif 4</option><option value="'JetBrains Mono', monospace">JetBrains Mono</option></select></label><label>Font size at 1920px (px)<input type="number" min="8" max="240" value={selected.content.fontSize ?? 56} onChange={(event) => updateFontSize(Number(event.target.value))} /></label></>}{selected.type === 'clock' && <label>Timezone<input value={selected.content.timezone ?? ''} onChange={(event) => updateContent('timezone', event.target.value)} /></label>}{(selected.type === 'image' || selected.type === 'video') && <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}<div className="stack-controls"><button className="secondary" onClick={() => moveLayer('up')}>Bring forward</button><button className="secondary" onClick={() => moveLayer('down')}>Send backward</button></div><div className="position-grid">{(['x', 'y', 'width', 'height'] as const).map((key) => <label key={key}>{key}<input type="number" min="0" max="100" value={selected[key]} onChange={(event) => updateLayer(selected.id, { [key]: Number(event.target.value) })} /></label>)}</div><button className="danger" onClick={removeSelected}>Remove layer</button></> : <p>Select an item on the canvas to edit it.</p>}</aside>
-    </div>{notice && <p className="editor-notice">{notice}</p>}
+    </div>{selected && <section className="wall-layer-controls"><label>Layer canvas<select value={selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}><option value="screen">Each display</option><option value="wall">Full wall — span and crop across displays</option></select></label>{selected.space === 'wall' && <div className="target-picker"><span>Displays used by this wall layer</span>{devices.map((item) => <label key={item.id}><input type="checkbox" checked={!selected.target.length || selected.target.includes(item.id)} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div>}</section>}{notice && <p className="editor-notice">{notice}</p>}
   </main>
 }
 
@@ -231,6 +236,9 @@ function Player() {
   const [device, setDevice] = useState<{ id: string; token: string } | null>(() => { try { return JSON.parse(localStorage.getItem('videowall-device') ?? 'null') } catch { return null } })
   const [scene, setScene] = useState<Scene | null>(null)
   const [status, setStatus] = useState('Enter the PIN shown in the admin dashboard.')
+  const [serverOffsetMs, setServerOffsetMs] = useState(0)
+  const [wallDevices, setWallDevices] = useState<Device[]>([])
+  const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
 
   useEffect(() => {
     const refresh = window.setTimeout(() => location.reload(), 6 * 60 * 60 * 1000)
@@ -241,9 +249,14 @@ function Player() {
     if (!device || !supabase) return
     const client = supabase
     const refresh = async () => {
+      const startedAt = Date.now()
       const { data, error } = await client.rpc('get_player_state', { requested_device_id: device.id, requested_token: device.token })
+      const receivedAt = Date.now()
       if (error) return setStatus('Connection issue — retrying…')
       if (data?.scene) setScene({ ...data.scene, layers: data.scene.layers as SceneLayer[] })
+      if (data?.devices) setWallDevices(data.devices as Device[])
+      if (data?.server_now) setServerOffsetMs(new Date(data.server_now).getTime() - (startedAt + receivedAt) / 2)
+      if (data?.scene_started_at) setSceneStartedAtMs(new Date(data.scene_started_at).getTime())
       setStatus('Connected')
       await client.rpc('player_heartbeat', { requested_device_id: device.id, requested_token: device.token, viewport_width: innerWidth, viewport_height: innerHeight })
     }
@@ -262,28 +275,51 @@ function Player() {
 
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
-  return scene ? <ScenePreview scene={scene} player deviceId={device.id} /> : <main className="player-message">{status}</main>
+  return scene ? <ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} /> : <main className="player-message">{status}</main>
 }
 
-function ScenePreview({ scene, player = false, deviceId }: { scene: Scene; player?: boolean; deviceId?: string }) {
+function ScenePreview({ scene, player = false, deviceId, devices = [], serverOffsetMs = 0, sceneStartedAtMs = 0 }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverOffsetMs?: number; sceneStartedAtMs?: number }) {
   const targetId = useMemo(() => player ? 'player' : 'preview', [player])
+  const current = devices.find((item) => item.id === deviceId)
+  const totalWidth = Math.max(1, ...devices.map((item) => (item.layout_x ?? 0) + (item.layout_width ?? 1)))
+  const totalHeight = Math.max(1, ...devices.map((item) => (item.layout_y ?? 0) + (item.layout_height ?? 1)))
   const layers = deviceId ? scene.layers.filter((layer) => !layer.target.length || layer.target.includes(deviceId)) : scene.layers
-  return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'}>{layers.map((layer) => <Layer key={layer.id} layer={layer} />)}</div>
+  return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'}>{layers.map((layer) => {
+    if (player && layer.space === 'wall' && current) {
+      const left = ((layer.x - ((current.layout_x ?? 0) / totalWidth) * 100) / ((current.layout_width ?? 1) / totalWidth))
+      const top = ((layer.y - ((current.layout_y ?? 0) / totalHeight) * 100) / ((current.layout_height ?? 1) / totalHeight))
+      const width = layer.width / ((current.layout_width ?? 1) / totalWidth)
+      const height = layer.height / ((current.layout_height ?? 1) / totalHeight)
+      return <Layer key={layer.id} layer={layer} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
+    }
+    return <Layer key={layer.id} layer={layer} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
+  })}</div>
 }
 
-function Layer({ layer }: { layer: SceneLayer }) {
-  const style = { left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1 }
+function Layer({ layer, styleOverride, serverOffsetMs = 0, sceneStartedAtMs = 0 }: { layer: SceneLayer; styleOverride?: CSSProperties; serverOffsetMs?: number; sceneStartedAtMs?: number }) {
+  const style = { left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, ...styleOverride }
   const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }
-  if (layer.type === 'video' && layer.content.url) return <video className="media-layer" style={style} src={layer.content.url} autoPlay muted={layer.content.muted !== false} loop={layer.content.loop !== false} playsInline />
+  if (layer.type === 'video' && layer.content.url) return <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
   if (layer.type === 'image' && layer.content.url) return <img className="media-layer" style={style} src={layer.content.url} alt="" />
-  if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} />
+  if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} serverOffsetMs={serverOffsetMs} />
   if (layer.type === 'ticker') return <div className="ticker-layer" style={{ ...style, ...typography }}><span>{layer.content.text}</span></div>
   return <div className="text-layer" style={{ ...style, ...typography }}>{layer.content.text}</div>
 }
 
-function Clock({ style, timezone }: { style: CSSProperties; timezone?: string }) {
-  const [now, setNow] = useState(new Date()); useEffect(() => { const timer = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(timer) }, [])
-  return <time className="clock-layer" style={style}>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone }).format(now)}</time>
+function SyncedVideo({ style, src, muted, loop, serverOffsetMs, sceneStartedAtMs }: { style: CSSProperties; src: string; muted: boolean; loop: boolean; serverOffsetMs: number; sceneStartedAtMs: number }) {
+  const videoRef = useState(() => ({ current: null as HTMLVideoElement | null }))[0]
+  useEffect(() => {
+    const video = videoRef.current; if (!video || !sceneStartedAtMs) return
+    const align = () => { if (video.duration && Number.isFinite(video.duration)) video.currentTime = ((Date.now() + serverOffsetMs - sceneStartedAtMs) / 1000) % video.duration }
+    video.addEventListener('loadedmetadata', align); align(); void video.play().catch(() => undefined)
+    return () => video.removeEventListener('loadedmetadata', align)
+  }, [src, serverOffsetMs, sceneStartedAtMs, videoRef])
+  return <video className="media-layer" ref={(node) => { videoRef.current = node }} style={style} src={src} autoPlay muted={muted} loop={loop} playsInline />
+}
+
+function Clock({ style, timezone, serverOffsetMs = 0 }: { style: CSSProperties; timezone?: string; serverOffsetMs?: number }) {
+  const [now, setNow] = useState(new Date()); useEffect(() => { const timer = setInterval(() => setNow(new Date()), 250); return () => clearInterval(timer) }, [])
+  return <time className="clock-layer" style={style}>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone }).format(new Date(now.getTime() + serverOffsetMs))}</time>
 }
 
 export default App

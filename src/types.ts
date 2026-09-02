@@ -9,6 +9,7 @@ export type SceneLayer = {
   width: number
   height: number
   zIndex: number
+  space?: 'screen' | 'wall'
   opacity?: number
   content: {
     url?: string
@@ -36,6 +37,10 @@ export type Device = {
   last_seen_at: string | null
   width: number | null
   height: number | null
+  layout_x?: number
+  layout_y?: number
+  layout_width?: number
+  layout_height?: number
 }
 
 export type Wall = { id: string; name: string }
