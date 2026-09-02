@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type PointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent } from 'react'
 import { isConfigured, supabase } from './lib/supabase'
 import type { Device, Scene, SceneLayer, Wall } from './types'
 
@@ -274,6 +274,7 @@ function Player() {
   const [serverOffsetMs, setServerOffsetMs] = useState(0)
   const [wallDevices, setWallDevices] = useState<Device[]>([])
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
+  const bestClockSample = useRef({ roundTripMs: Number.POSITIVE_INFINITY, receivedAt: 0 })
 
   useEffect(() => {
     const refresh = window.setTimeout(() => location.reload(), 6 * 60 * 60 * 1000)
@@ -290,7 +291,16 @@ function Player() {
       if (error) return setStatus('Connection issue — retrying…')
       if (data?.scene) setScene({ ...data.scene, layers: data.scene.layers as SceneLayer[] })
       if (data?.devices) setWallDevices(data.devices as Device[])
-      if (data?.server_now) setServerOffsetMs(new Date(data.server_now).getTime() - (startedAt + receivedAt) / 2)
+      if (data?.server_now) {
+        const roundTripMs = receivedAt - startedAt
+        const sampleAge = receivedAt - bestClockSample.current.receivedAt
+        // The shortest request is the least affected by network queueing. Refresh it periodically
+        // so a Pi clock correction cannot leave the player using an old offset.
+        if (roundTripMs <= bestClockSample.current.roundTripMs + 12 || sampleAge > 30_000) {
+          setServerOffsetMs(new Date(data.server_now).getTime() - (startedAt + receivedAt) / 2)
+          bestClockSample.current = { roundTripMs, receivedAt }
+        }
+      }
       if (data?.scene_started_at) setSceneStartedAtMs(new Date(data.scene_started_at).getTime())
       setStatus('Connected')
       await client.rpc('player_heartbeat', { requested_device_id: device.id, requested_token: device.token, viewport_width: innerWidth, viewport_height: innerHeight })
@@ -356,8 +366,19 @@ function SyncedVideo({ style, src, muted, loop, serverOffsetMs, sceneStartedAtMs
 }
 
 function Clock({ style, timezone, serverOffsetMs = 0 }: { style: CSSProperties; timezone?: string; serverOffsetMs?: number }) {
-  const [now, setNow] = useState(new Date()); useEffect(() => { const timer = setInterval(() => setNow(new Date()), 250); return () => clearInterval(timer) }, [])
-  return <time className="clock-layer" style={style}>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone }).format(new Date(now.getTime() + serverOffsetMs))}</time>
+  const [now, setNow] = useState(() => Date.now() + serverOffsetMs)
+  useEffect(() => {
+    let timer = 0
+    const tick = () => {
+      const adjustedNow = Date.now() + serverOffsetMs
+      setNow(adjustedNow)
+      // Every player schedules its next repaint at the same server-time second boundary.
+      timer = window.setTimeout(tick, Math.max(12, 1000 - (adjustedNow % 1000) + 8))
+    }
+    tick()
+    return () => window.clearTimeout(timer)
+  }, [serverOffsetMs])
+  return <time className="clock-layer" style={style}>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone }).format(new Date(now))}</time>
 }
 
 export default App
