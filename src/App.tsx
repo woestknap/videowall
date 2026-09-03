@@ -361,7 +361,9 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
 }
 
 function Player() {
-  const debug = new URLSearchParams(location.search).get('debug') === '1'
+  const playerParams = new URLSearchParams(location.search)
+  const debug = playerParams.get('debug') === '1'
+  const safeMode = playerParams.get('safe') === '1'
   const [pin, setPin] = useState('')
   const [device, setDevice] = useState<{ id: string; token: string } | null>(() => { try { return JSON.parse(localStorage.getItem('videowall-device') ?? 'null') } catch { return null } })
   const [scene, setScene] = useState<Scene | null>(null)
@@ -432,6 +434,7 @@ function Player() {
 
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
+  if (safeMode) return <main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>Videowall player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main>
   return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}`}</pre>}</> : <main className="player-message">{status}</main>
 }
 
