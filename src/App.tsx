@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type WheelEvent } from 'react'
 import { isConfigured, supabase } from './lib/supabase'
 import type { Device, Scene, SceneLayer, Wall } from './types'
 
@@ -177,6 +177,10 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [drag, setDrag] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null)
   const [deviceDrag, setDeviceDrag] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null)
   const [layoutDirty, setLayoutDirty] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null)
+  const [spaceHeld, setSpaceHeld] = useState(false)
 
   useEffect(() => {
     if (!supabase) return
@@ -187,6 +191,12 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     })
   }, [sceneId])
   useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height').order('layout_y').order('layout_x').then(({ data }) => setDevices(data ?? [])) }, [])
+  useEffect(() => {
+    const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }
+    const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }
+    window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp)
+    return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) }
+  }, [])
 
   if (!scene) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
   const currentScene = scene
@@ -234,6 +244,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     updateLayer(selected.id, { content: { ...selected.content, url: data.publicUrl } }); setNotice('Uploaded. Save the scene to keep this layer.')
   }
   function startDrag(event: PointerEvent<HTMLDivElement>, layer: SceneLayer) {
+    if (spaceHeld) return
     const box = event.currentTarget.parentElement!.getBoundingClientRect()
     setSelectedId(layer.id); setDrag({ id: layer.id, offsetX: ((event.clientX - box.left) / box.width) * 100 - layer.x, offsetY: ((event.clientY - box.top) / box.height) * 100 - layer.y })
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -245,6 +256,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     updateLayer(drag.id, { x, y })
   }
   function startDeviceDrag(event: PointerEvent<HTMLSpanElement>, device: Device) {
+    if (spaceHeld) return
     const box = event.currentTarget.parentElement!.parentElement!.getBoundingClientRect()
     setDeviceDrag({ id: device.id, offsetX: ((event.clientX - box.left) / box.width) * WALL_WORKSPACE_WIDTH - (device.layout_x ?? 0), offsetY: ((event.clientY - box.top) / box.height) * WALL_WORKSPACE_HEIGHT - (device.layout_y ?? 0) })
     event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); event.stopPropagation()
@@ -255,6 +267,19 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const x = ((event.clientX - box.left) / box.width) * WALL_WORKSPACE_WIDTH - deviceDrag.offsetX
     const y = ((event.clientY - box.top) / box.height) * WALL_WORKSPACE_HEIGHT - deviceDrag.offsetY
     updateDeviceLayout(deviceDrag.id, { layout_x: x, layout_y: y })
+  }
+  function startPan(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 1 && !spaceHeld) return
+    setPanDrag({ x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y })
+    event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault()
+  }
+  function movePan(event: PointerEvent<HTMLDivElement>) {
+    if (!panDrag) return
+    setPan({ x: panDrag.panX + event.clientX - panDrag.x, y: panDrag.panY + event.clientY - panDrag.y })
+  }
+  function zoomCanvas(event: WheelEvent<HTMLElement>) {
+    event.preventDefault()
+    setZoom((current) => Math.max(.35, Math.min(3, Number((current * (event.deltaY < 0 ? 1.12 : .89)).toFixed(3)))))
   }
   function setMediaAspect(layerId: string, ratio: number) {
     if (!Number.isFinite(ratio) || ratio <= 0) return
@@ -274,7 +299,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   return <main className="editor-page">
     <header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><div className="editor-actions"><button className="secondary" disabled={!layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header>
     <div className="editor-layout"><aside className="editor-toolbar"><div className="screen-list"><p className="eyebrow">SCREENS IN THIS SCENE</p><small>Choose the displays used in this scene. Drag their labels freely on the workspace.</small>{devices.map((item) => <div className="screen-list-item" key={item.id}><label><input type="checkbox" checked={isSceneDevice(item.id)} onChange={() => toggleSceneDevice(item.id)} /> <span>{item.name}</span></label><label>Name<input value={item.name} onChange={(event) => updateDeviceLayout(item.id, { name: event.target.value })} /></label><div><label>W<input type="number" min="1" value={item.layout_width ?? 1920} onChange={(event) => updateDeviceLayout(item.id, { layout_width: Math.max(1, Number(event.target.value)) })} /></label><label>H<input type="number" min="1" value={item.layout_height ?? 1080} onChange={(event) => updateDeviceLayout(item.id, { layout_height: Math.max(1, Number(event.target.value)) })} /></label></div></div>)}</div><p className="eyebrow">ADD MEDIA</p><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button><small>Screen outlines stay above media. Drag a screen label to position that display independently.</small></aside>
-      <section className="editor-stage-wrap"><div className="editor-stage media-workspace" onPointerMove={(event) => { dragLayer(event); dragDevice(event) }} onPointerUp={() => { setDrag(null); setDeviceDrag(null) }} onPointerCancel={() => { setDrag(null); setDeviceDrag(null) }}>{currentScene.layers.map((layer) => <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" onLoad={(event) => setMediaAspect(layer.id, event.currentTarget.naturalWidth / event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={(event) => setMediaAspect(layer.id, event.currentTarget.videoWidth / event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'}`} key={item.id} style={{ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%` }}><span onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div><p className="canvas-hint">Freeform 7680 × 4320 workspace · display boundaries are always on top.</p></section>
+      <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => setZoom((current) => Math.max(.35, current - .15))}>−</button><span>{Math.round(zoom * 100)}%</span><button className="secondary" onClick={() => setZoom((current) => Math.min(3, current + .15))}>+</button><button className="secondary" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Reset</button></div><div className={`editor-stage media-workspace ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }} onPointerCancel={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }}>{currentScene.layers.map((layer) => <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" onLoad={(event) => setMediaAspect(layer.id, event.currentTarget.naturalWidth / event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={(event) => setMediaAspect(layer.id, event.currentTarget.videoWidth / event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'}`} key={item.id} style={{ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%` }}><span onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div><p className="canvas-hint">Scroll to zoom · hold Space and drag, or use middle mouse, to pan.</p></section>
       <aside className="inspector"><p className="eyebrow">{selected ? 'MEDIA LAYER' : 'INSPECTOR'}</p>{selected ? <><label>Type<select value={selected.type} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option></select></label><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label><label><input type="checkbox" checked={selected.lockedAspect !== false} onChange={(event) => updateLayer(selected.id, { lockedAspect: event.target.checked })} /> Lock media aspect ratio</label><label>Rotation (degrees)<input type="number" value={selected.rotation ?? 0} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })} /></label><label>Scale<input type="number" min="0.1" max="5" step="0.01" value={selected.scale ?? 1} onChange={(event) => updateLayer(selected.id, { scale: Math.max(.1, Number(event.target.value)) })} /></label><div className="stack-controls"><button className="secondary" onClick={() => moveLayer('up')}>Bring forward</button><button className="secondary" onClick={() => moveLayer('down')}>Send backward</button></div><div className="position-grid"><label>x<input type="number" value={selected.x} onChange={(event) => updateLayer(selected.id, { x: Number(event.target.value) })} /></label><label>y<input type="number" value={selected.y} onChange={(event) => updateLayer(selected.id, { y: Number(event.target.value) })} /></label><label>width<input type="number" min="0" value={selected.width} onChange={(event) => updateDimension('width', Number(event.target.value))} /></label><label>height<input type="number" min="0" value={selected.height} onChange={(event) => updateDimension('height', Number(event.target.value))} /></label></div><button className="danger" onClick={removeSelected}>Remove layer</button></> : <p>Select an image or video layer to edit it.</p>}</aside>
     </div>{selected && <section className="wall-layer-controls"><label>Layer canvas<select value={selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}><option value="screen">One copy on each selected display</option><option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span>{devices.map((item) => <label key={item.id} className={!isSceneDevice(item.id) ? 'disabled-target' : ''}><input type="checkbox" disabled={!isSceneDevice(item.id)} checked={isSceneDevice(item.id) && (!selected.target.length || selected.target.includes(item.id))} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div></section>}{notice && <p className="editor-notice">{notice}</p>}
   </main>
