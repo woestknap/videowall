@@ -228,7 +228,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     // The workspace itself is CSS-scaled. Counter-scale guide widths so they
     // remain exactly five physical pixels while zooming in or out.
     document.documentElement.style.setProperty('--videowall-guide-width', `${5 / zoom}px`)
-    return () => document.documentElement.style.removeProperty('--videowall-guide-width')
+    return () => { document.documentElement.style.removeProperty('--videowall-guide-width') }
   }, [zoom])
 
   if (!scene) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
