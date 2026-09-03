@@ -33,3 +33,4 @@
 .editor-stage-wrap { position: relative; overflow: hidden; }
 .canvas-controls { position: absolute; z-index: 2147483647; top: 1rem; left: 1rem; display: flex; align-items: center; gap: .35rem; padding: .35rem; border: 1px solid #374968; border-radius: 8px; background: #101626e8; font-size: .78rem; }.canvas-controls button { padding: .3rem .5rem; }
 .panning-workspace { cursor: grab; }.panning-workspace:active { cursor: grabbing; }
+.player-canvas { background: #000; }

@@ -386,7 +386,7 @@ function ScenePreview({ scene, player = false, deviceId, devices = [], serverOff
   const current = devices.find((item) => item.id === deviceId)
   if (player && deviceId && scene.device_ids?.length && !scene.device_ids.includes(deviceId)) return <div id={targetId} className="player-canvas" />
   const layers = deviceId ? scene.layers.filter((layer) => !layer.target.length || layer.target.includes(deviceId)) : scene.layers
-  return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'}>{layers.map((layer) => {
+  return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'} style={player ? { position: 'fixed', inset: 0, overflow: 'hidden', background: '#000' } : undefined}>{layers.map((layer) => {
     if (player && layer.space === 'wall' && current) {
       const left = ((layer.x - ((current.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100) / ((current.layout_width ?? 1) / WALL_WORKSPACE_WIDTH))
       const top = ((layer.y - ((current.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100) / ((current.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT))
