@@ -225,7 +225,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   function updateContent(key: 'text' | 'url' | 'timezone' | 'fontFamily', value: string) { if (selected) updateLayer(selected.id, { content: { ...selected.content, [key]: value } }) }
   function updateFontSize(value: number) { if (selected) updateLayer(selected.id, { content: { ...selected.content, fontSize: Math.max(8, value) } }) }
   function addLayer(type: 'image' | 'video') {
-    const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], space: 'wall', x: 10, y: 10, width: 45, height: 45, zIndex: currentScene.layers.length + 1, scale: 1, rotation: 0, lockedAspect: true, aspectRatio: 16 / 9, content: { url: '' } }
+    const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], space: 'wall', coordinateSpace: 'freeform', x: 10, y: 10, width: 45, height: 45, zIndex: currentScene.layers.length + 1, scale: 1, rotation: 0, lockedAspect: true, aspectRatio: 16 / 9, content: { url: '' } }
     setScene({ ...currentScene, layers: [...currentScene.layers, layer] }); setSelectedId(layer.id)
   }
   function removeSelected() { if (!selected) return; setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
@@ -405,14 +405,26 @@ function Player() {
 function ScenePreview({ scene, player = false, deviceId, devices = [], serverOffsetMs = 0, sceneStartedAtMs = 0 }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverOffsetMs?: number; sceneStartedAtMs?: number }) {
   const targetId = useMemo(() => player ? 'player' : 'preview', [player])
   const current = devices.find((item) => item.id === deviceId)
+  const legacyDevices = scene.device_ids?.length ? devices.filter((item) => scene.device_ids!.includes(item.id)) : devices
+  const minX = Math.min(0, ...legacyDevices.map((item) => item.layout_x ?? 0))
+  const minY = Math.min(0, ...legacyDevices.map((item) => item.layout_y ?? 0))
+  const dynamicWidth = Math.max(1, ...legacyDevices.map((item) => (item.layout_x ?? 0) + (item.layout_width ?? 1))) - minX
+  const dynamicHeight = Math.max(1, ...legacyDevices.map((item) => (item.layout_y ?? 0) + (item.layout_height ?? 1))) - minY
   if (player && deviceId && scene.device_ids?.length && !scene.device_ids.includes(deviceId)) return <div id={targetId} className="player-canvas" />
   const layers = deviceId ? scene.layers.filter((layer) => !layer.target.length || layer.target.includes(deviceId)) : scene.layers
   return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'} style={player ? { position: 'fixed', inset: 0, overflow: 'hidden', background: '#000' } : undefined}>{layers.map((layer) => {
     if (player && layer.space === 'wall' && current) {
-      const left = ((layer.x - ((current.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100) / ((current.layout_width ?? 1) / WALL_WORKSPACE_WIDTH))
-      const top = ((layer.y - ((current.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100) / ((current.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT))
-      const width = layer.width / ((current.layout_width ?? 1) / WALL_WORKSPACE_WIDTH)
-      const height = layer.height / ((current.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT)
+      // Scenes created before the freeform editor use a wall-relative coordinate
+      // system. Preserve that mapping so the layout migration never blanks them.
+      const freeform = layer.coordinateSpace === 'freeform' || layer.aspectRatio !== undefined
+      const workspaceWidth = freeform ? WALL_WORKSPACE_WIDTH : dynamicWidth
+      const workspaceHeight = freeform ? WALL_WORKSPACE_HEIGHT : dynamicHeight
+      const originX = freeform ? 0 : minX
+      const originY = freeform ? 0 : minY
+      const left = ((layer.x - (((current.layout_x ?? 0) - originX) / workspaceWidth) * 100) / ((current.layout_width ?? 1) / workspaceWidth))
+      const top = ((layer.y - (((current.layout_y ?? 0) - originY) / workspaceHeight) * 100) / ((current.layout_height ?? 1) / workspaceHeight))
+      const width = layer.width / ((current.layout_width ?? 1) / workspaceWidth)
+      const height = layer.height / ((current.layout_height ?? 1) / workspaceHeight)
       return <Layer key={layer.id} layer={layer} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
     }
     return <Layer key={layer.id} layer={layer} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
