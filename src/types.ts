@@ -48,6 +48,7 @@ export type Device = {
   layout_y?: number
   layout_width?: number
   layout_height?: number
+  auto_size?: boolean
 }
 
 export type Wall = { id: string; name: string }
