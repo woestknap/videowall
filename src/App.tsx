@@ -104,6 +104,14 @@ function Admin() {
     setWalls(remaining); setActiveWall(remaining[0]?.id ?? ''); setDevices([]); setNotice('Wall and its paired screens were deleted.')
   }
 
+  async function deleteDevice(device: Device) {
+    if (!supabase) return
+    if (!confirm(`Remove paired screen “${device.name}”? The Pi can be paired again later with a new PIN.`)) return
+    const { error } = await supabase.from('devices').delete().eq('id', device.id)
+    if (error) return setNotice(error.message)
+    setDevices((current) => current.filter((item) => item.id !== device.id)); setNotice(`${device.name} was removed. It can no longer play this wall until paired again.`)
+  }
+
   async function publish(scene: Scene) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
     const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
@@ -152,7 +160,7 @@ function Admin() {
     {notice && <p className="notice">{notice}</p>}
     <section className="dashboard-grid">
       <article className="panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>
-        <div className="wall-preview">{devices.length ? devices.map((device, index) => <div className="screen-card" key={device.id}><span>{index + 1}</span><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small></div>) : <p>Pair a Pi to start building your wall.</p>}</div>
+        <div className="wall-preview">{devices.length ? devices.map((device, index) => <div className="screen-card" key={device.id}><span>{index + 1}</span><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small><button className="danger" onClick={() => void deleteDevice(device)}>Remove Pi</button></div>) : <p>Pair a Pi to start building your wall.</p>}</div>
       </article>
       <article className="panel"><div className="panel-heading"><div><p className="eyebrow">SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} /></article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>
