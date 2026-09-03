@@ -95,6 +95,15 @@ function Admin() {
     setPin(data as string); setNotice('PIN is valid for 10 minutes.')
   }
 
+  async function deleteWall() {
+    if (!supabase || !activeWall || !selectedWall) return
+    if (!confirm(`Delete wall “${selectedWall.name}” and every paired screen on it? This cannot be undone.`)) return
+    const { error } = await supabase.from('walls').delete().eq('id', activeWall)
+    if (error) return setNotice(error.message)
+    const remaining = walls.filter((wall) => wall.id !== activeWall)
+    setWalls(remaining); setActiveWall(remaining[0]?.id ?? ''); setDevices([]); setNotice('Wall and its paired screens were deleted.')
+  }
+
   async function publish(scene: Scene) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
     const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
@@ -109,6 +118,15 @@ function Admin() {
     if (error) return setNotice(error.message)
     const newScene = { ...data, layers: data.layers as SceneLayer[] }
     setScenes((existing) => [...existing, newScene]); setSelectedSceneId(newScene.id)
+  }
+
+  async function deleteScene(scene: Scene) {
+    if (!supabase || scene.id === 'preview') return
+    if (!confirm(`Delete scene “${scene.name}”? This cannot be undone.`)) return
+    const { error } = await supabase.from('scenes').delete().eq('id', scene.id)
+    if (error) return setNotice(error.message)
+    const remaining = scenes.filter((item) => item.id !== scene.id)
+    setScenes(remaining); setSelectedSceneId(remaining[0]?.id ?? ''); setNotice('Scene deleted.')
   }
 
   function updateScene(next: Scene) {
@@ -127,6 +145,7 @@ function Admin() {
     <section className="toolbar">
       <label>Wall <select value={activeWall} onChange={(event) => setActiveWall(event.target.value)}><option value="">Select a wall</option>{walls.map((wall) => <option key={wall.id} value={wall.id}>{wall.name}</option>)}</select></label>
       <button className="secondary" onClick={() => void createWall()}>+ Wall</button>
+      <button className="danger" disabled={!activeWall} onClick={() => void deleteWall()}>Delete wall</button>
       <button disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button>
       {pin && <div className="pin">PIN <strong>{pin}</strong><small>Open {location.origin}/?player=1</small></div>}
     </section>
@@ -137,7 +156,7 @@ function Admin() {
       </article>
       <article className="panel"><div className="panel-heading"><div><p className="eyebrow">SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} /></article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>
-        {scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button></div>) : <p>Create your first reusable scene.</p>}
+        {scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}
       </article>
     </section>
   </main>
@@ -306,6 +325,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
 }
 
 function Player() {
+  const debug = new URLSearchParams(location.search).get('debug') === '1'
   const [pin, setPin] = useState('')
   const [device, setDevice] = useState<{ id: string; token: string } | null>(() => { try { return JSON.parse(localStorage.getItem('videowall-device') ?? 'null') } catch { return null } })
   const [scene, setScene] = useState<Scene | null>(null)
@@ -345,6 +365,7 @@ function Player() {
       const receivedAt = Date.now()
       if (error) return setStatus('Connection issue — retrying…')
       if (data?.scene) setScene({ ...data.scene, layers: data.scene.layers as SceneLayer[] })
+      else setScene(null)
       if (data?.devices) setWallDevices(data.devices as Device[])
       if (data?.server_now) {
         const roundTripMs = receivedAt - startedAt
@@ -378,7 +399,7 @@ function Player() {
 
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
-  return scene ? <ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} /> : <main className="player-message">{status}</main>
+  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}`}</pre>}</> : <main className="player-message">{status}</main>
 }
 
 function ScenePreview({ scene, player = false, deviceId, devices = [], serverOffsetMs = 0, sceneStartedAtMs = 0 }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverOffsetMs?: number; sceneStartedAtMs?: number }) {
