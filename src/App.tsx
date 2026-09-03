@@ -321,11 +321,17 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     event.preventDefault()
     setZoom((current) => Math.max(.35, Math.min(3, Number((current * (event.deltaY < 0 ? 1.12 : .89)).toFixed(3)))))
   }
-  function setMediaAspect(layerId: string, ratio: number) {
-    if (!Number.isFinite(ratio) || ratio <= 0) return
+  function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) {
+    if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return
     const layer = currentScene.layers.find((item) => item.id === layerId)
     if (!layer) return
-    updateLayer(layerId, { aspectRatio: ratio, height: layer.lockedAspect === false ? layer.height : layer.width * (16 / 9) / ratio })
+    // Do not overwrite deliberate resize/scale choices after the first media decode.
+    if (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight) return
+    const screenSpace = (layer.space ?? 'screen') === 'screen'
+    const target = devices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id)))
+    const referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH
+    const referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT
+    updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 })
   }
   function updateDimension(key: 'width' | 'height', value: number) {
     if (!selected) return
@@ -337,7 +343,7 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     updateLayer(selected.id, change)
   }
   function renderEditorMedia(layer: SceneLayer) {
-    return layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" onLoad={(event) => setMediaAspect(layer.id, event.currentTarget.naturalWidth / event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={(event) => setMediaAspect(layer.id, event.currentTarget.videoWidth / event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
+    return layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" onLoad={(event) => setMediaSize(layer.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={(event) => setMediaSize(layer.id, event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
   }
   return <main className="editor-page">
     <header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><div className="editor-actions"><button className="secondary" disabled={!layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header>

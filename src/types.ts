@@ -16,6 +16,8 @@ export type SceneLayer = {
   lockedAspect?: boolean
   aspectRatio?: number
   coordinateSpace?: 'legacy' | 'freeform'
+  sourceWidth?: number
+  sourceHeight?: number
   content: {
     url?: string
     text?: string
