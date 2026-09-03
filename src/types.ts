@@ -11,6 +11,10 @@ export type SceneLayer = {
   zIndex: number
   space?: 'screen' | 'wall'
   opacity?: number
+  rotation?: number
+  scale?: number
+  lockedAspect?: boolean
+  aspectRatio?: number
   content: {
     url?: string
     text?: string
