@@ -35,3 +35,4 @@
 .panning-workspace { cursor: grab; }.panning-workspace:active { cursor: grabbing; }
 .player-canvas { background: #000; }
 .player-debug { position: fixed; z-index: 2147483647; right: 1rem; bottom: 1rem; margin: 0; padding: .7rem; color: #d8ffe9; background: #07130dcc; border: 1px solid #4bb77c; border-radius: 7px; font: 12px/1.45 monospace; }
+.screen-layer-clip { position: absolute; overflow: hidden; }
