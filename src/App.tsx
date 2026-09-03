@@ -360,25 +360,37 @@ function Player() {
   const [device, setDevice] = useState<{ id: string; token: string } | null>(() => { try { return JSON.parse(localStorage.getItem('videowall-device') ?? 'null') } catch { return null } })
   const [scene, setScene] = useState<Scene | null>(null)
   const [status, setStatus] = useState('Enter the PIN shown in the admin dashboard.')
-  const [serverOffsetMs, setServerOffsetMs] = useState(0)
+  // This is server epoch time minus the browser's monotonic clock. Unlike
+  // Date.now(), performance.now() does not jump when NTP corrects a Pi clock.
+  const [serverEpochOffsetMs, setServerEpochOffsetMs] = useState(() => Date.now() - performance.now())
   const [wallDevices, setWallDevices] = useState<Device[]>([])
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
-  const bestClockSample = useRef({ roundTripMs: Number.POSITIVE_INFINITY, receivedAt: 0 })
-  const targetServerOffsetMs = useRef<number | null>(null)
 
   useEffect(() => {
-    if (!device) return
-    const correction = window.setInterval(() => {
-      const target = targetServerOffsetMs.current
-      if (target === null) return
-      setServerOffsetMs((current) => {
-        const difference = target - current
-        // Correct at 10 ms/second. This avoids a visible seconds jump when a
-        // network sample is late, while still following a corrected Pi clock.
-        return Math.abs(difference) < 1 ? target : current + Math.sign(difference) * Math.min(10, Math.abs(difference))
-      })
-    }, 1000)
-    return () => window.clearInterval(correction)
+    if (!device || !supabase) return
+    let cancelled = false
+    const client = supabase
+    const calibrateClock = async () => {
+      // This is the same principle as NTP: take several samples and retain the
+      // quickest round trip, which has the least network queueing error.
+      const samples: Array<{ roundTripMs: number; epochOffsetMs: number }> = []
+      for (let index = 0; index < 7; index += 1) {
+        const sentAt = performance.now()
+        const { data, error } = await client.rpc('get_server_time')
+        const receivedAt = performance.now()
+        const serverNow = data ? new Date(data as string).getTime() : NaN
+        if (!error && Number.isFinite(serverNow)) {
+          samples.push({ roundTripMs: receivedAt - sentAt, epochOffsetMs: serverNow + (receivedAt - sentAt) / 2 - receivedAt })
+        }
+      }
+      if (!cancelled && samples.length) {
+        samples.sort((a, b) => a.roundTripMs - b.roundTripMs)
+        setServerEpochOffsetMs(samples[0].epochOffsetMs)
+      }
+    }
+    void calibrateClock()
+    const timer = window.setInterval(() => void calibrateClock(), 5 * 60 * 1000)
+    return () => { cancelled = true; window.clearInterval(timer) }
   }, [device])
 
   useEffect(() => {
@@ -390,26 +402,11 @@ function Player() {
     if (!device || !supabase) return
     const client = supabase
     const refresh = async () => {
-      const startedAt = Date.now()
       const { data, error } = await client.rpc('get_player_state', { requested_device_id: device.id, requested_token: device.token })
-      const receivedAt = Date.now()
       if (error) return setStatus('Connection issue — retrying…')
       if (data?.scene) setScene({ ...data.scene, layers: data.scene.layers as SceneLayer[] })
       else setScene(null)
       if (data?.devices) setWallDevices(data.devices as Device[])
-      if (data?.server_now) {
-        const roundTripMs = receivedAt - startedAt
-        const sampleAge = receivedAt - bestClockSample.current.receivedAt
-        // The shortest request is the least affected by network queueing. Refresh it periodically
-        // so a Pi clock correction cannot leave the player using an old offset.
-        if (roundTripMs < bestClockSample.current.roundTripMs - 10 || sampleAge > 30_000) {
-          const offset = new Date(data.server_now).getTime() - (startedAt + receivedAt) / 2
-          const firstSample = targetServerOffsetMs.current === null
-          targetServerOffsetMs.current = offset
-          if (firstSample) setServerOffsetMs(offset)
-          bestClockSample.current = { roundTripMs, receivedAt }
-        }
-      }
       if (data?.scene_started_at) setSceneStartedAtMs(new Date(data.scene_started_at).getTime())
       setStatus('Connected')
       await client.rpc('player_heartbeat', { requested_device_id: device.id, requested_token: device.token, viewport_width: innerWidth, viewport_height: innerHeight })
@@ -429,10 +426,10 @@ function Player() {
 
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
-  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}`}</pre>}</> : <main className="player-message">{status}</main>
+  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}`}</pre>}</> : <main className="player-message">{status}</main>
 }
 
-function ScenePreview({ scene, player = false, deviceId, devices = [], serverOffsetMs = 0, sceneStartedAtMs = 0 }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverOffsetMs?: number; sceneStartedAtMs?: number }) {
+function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0 }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number }) {
   const targetId = useMemo(() => player ? 'player' : 'preview', [player])
   const current = devices.find((item) => item.id === deviceId)
   const legacyDevices = scene.device_ids?.length ? devices.filter((item) => scene.device_ids!.includes(item.id)) : devices
@@ -455,47 +452,79 @@ function ScenePreview({ scene, player = false, deviceId, devices = [], serverOff
       const top = ((layer.y - (((current.layout_y ?? 0) - originY) / workspaceHeight) * 100) / ((current.layout_height ?? 1) / workspaceHeight))
       const width = layer.width / ((current.layout_width ?? 1) / workspaceWidth)
       const height = layer.height / ((current.layout_height ?? 1) / workspaceHeight)
-      return <Layer key={layer.id} layer={layer} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
+      return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
     }
-    return <Layer key={layer.id} layer={layer} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
+    return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
   })}</div>
 }
 
-function Layer({ layer, styleOverride, serverOffsetMs = 0, sceneStartedAtMs = 0 }: { layer: SceneLayer; styleOverride?: CSSProperties; serverOffsetMs?: number; sceneStartedAtMs?: number }) {
+function Layer({ layer, styleOverride, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0 }: { layer: SceneLayer; styleOverride?: CSSProperties; serverEpochOffsetMs?: number; sceneStartedAtMs?: number }) {
   const style = { left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})`, ...styleOverride }
   const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }
-  if (layer.type === 'video' && layer.content.url) return <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverOffsetMs={serverOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
+  if (layer.type === 'video' && layer.content.url) return <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
   if (layer.type === 'image' && layer.content.url) return <img className="media-layer" style={style} src={layer.content.url} alt="" />
-  if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} serverOffsetMs={serverOffsetMs} />
+  if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} serverEpochOffsetMs={serverEpochOffsetMs} />
   if (layer.type === 'ticker') return <div className="ticker-layer" style={{ ...style, ...typography }}><span>{layer.content.text}</span></div>
   return <div className="text-layer" style={{ ...style, ...typography }}>{layer.content.text}</div>
 }
 
-function SyncedVideo({ style, src, muted, loop, serverOffsetMs, sceneStartedAtMs }: { style: CSSProperties; src: string; muted: boolean; loop: boolean; serverOffsetMs: number; sceneStartedAtMs: number }) {
-  const videoRef = useState(() => ({ current: null as HTMLVideoElement | null }))[0]
+function SyncedVideo({ style, src, muted, loop, serverEpochOffsetMs, sceneStartedAtMs }: { style: CSSProperties; src: string; muted: boolean; loop: boolean; serverEpochOffsetMs: number; sceneStartedAtMs: number }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   useEffect(() => {
     const video = videoRef.current; if (!video || !sceneStartedAtMs) return
-    const align = () => { if (video.duration && Number.isFinite(video.duration)) video.currentTime = ((Date.now() + serverOffsetMs - sceneStartedAtMs) / 1000) % video.duration }
-    video.addEventListener('loadedmetadata', align); align(); void video.play().catch(() => undefined)
-    return () => video.removeEventListener('loadedmetadata', align)
-  }, [src, serverOffsetMs, sceneStartedAtMs, videoRef])
-  return <video className="media-layer" ref={(node) => { videoRef.current = node }} style={style} src={src} autoPlay muted={muted} loop={loop} playsInline />
+    const expectedPosition = () => {
+      const elapsedSeconds = Math.max(0, (performance.now() + serverEpochOffsetMs - sceneStartedAtMs) / 1000)
+      if (!video.duration || !Number.isFinite(video.duration)) return 0
+      return loop ? elapsedSeconds % video.duration : Math.min(elapsedSeconds, video.duration)
+    }
+    const align = () => {
+      if (!video.duration || !Number.isFinite(video.duration)) return
+      video.currentTime = expectedPosition()
+      video.playbackRate = 1
+      void video.play().catch(() => undefined)
+    }
+    const correctDrift = () => {
+      if (!video.duration || !Number.isFinite(video.duration) || video.paused) return
+      const expected = expectedPosition()
+      let drift = expected - video.currentTime
+      if (loop && Math.abs(drift) > video.duration / 2) drift -= Math.sign(drift) * video.duration
+      // Big stalls get a clean seek. Small decoder differences are corrected
+      // gradually, so separate Pis converge without visible jumps.
+      if (Math.abs(drift) > .18) {
+        video.currentTime = expected
+        video.playbackRate = 1
+      } else {
+        video.playbackRate = Math.max(.97, Math.min(1.03, 1 + drift * .15))
+      }
+    }
+    video.addEventListener('loadedmetadata', align)
+    align()
+    const timer = window.setInterval(correctDrift, 1500)
+    return () => { video.removeEventListener('loadedmetadata', align); window.clearInterval(timer) }
+  }, [src, loop, serverEpochOffsetMs, sceneStartedAtMs])
+  return <video className="media-layer" ref={videoRef} style={style} src={src} autoPlay muted={muted} loop={loop} playsInline />
 }
 
-function Clock({ style, timezone, serverOffsetMs = 0 }: { style: CSSProperties; timezone?: string; serverOffsetMs?: number }) {
-  const [now, setNow] = useState(() => Date.now() + serverOffsetMs)
-  const offsetRef = useRef(serverOffsetMs)
-  useEffect(() => { offsetRef.current = serverOffsetMs }, [serverOffsetMs])
+function Clock({ style, timezone, serverEpochOffsetMs }: { style: CSSProperties; timezone?: string; serverEpochOffsetMs: number }) {
+  const [now, setNow] = useState(() => performance.now() + serverEpochOffsetMs)
+  const offsetRef = useRef(serverEpochOffsetMs)
+  useEffect(() => { offsetRef.current = serverEpochOffsetMs }, [serverEpochOffsetMs])
   useEffect(() => {
-    let timer = 0
+    let frame = 0
+    let displayedSecond = -1
+    // requestAnimationFrame makes each browser repaint on the first available
+    // frame after the same absolute server-time boundary.
     const tick = () => {
-      const adjustedNow = Date.now() + offsetRef.current
-      setNow(adjustedNow)
-      // Every player schedules its next repaint at the same server-time second boundary.
-      timer = window.setTimeout(tick, Math.max(12, 1000 - (adjustedNow % 1000) + 8))
+      const synchronizedNow = performance.now() + offsetRef.current
+      const currentSecond = Math.floor(synchronizedNow / 1000)
+      if (currentSecond !== displayedSecond) {
+        displayedSecond = currentSecond
+        setNow(synchronizedNow)
+      }
+      frame = window.requestAnimationFrame(tick)
     }
     tick()
-    return () => window.clearTimeout(timer)
+    return () => window.cancelAnimationFrame(frame)
   }, [])
   return <time className="clock-layer" style={style}>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone }).format(new Date(now))}</time>
 }
