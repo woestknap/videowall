@@ -365,6 +365,7 @@ function Player() {
   const debug = playerParams.get('debug') === '1'
   const safeMode = playerParams.get('safe') === '1'
   const videosDisabled = playerParams.get('noVideo') === '1'
+  const rawVideos = playerParams.get('rawVideo') === '1'
   const [pin, setPin] = useState('')
   const [device, setDevice] = useState<{ id: string; token: string } | null>(() => { try { return JSON.parse(localStorage.getItem('videowall-device') ?? 'null') } catch { return null } })
   const [scene, setScene] = useState<Scene | null>(null)
@@ -436,10 +437,10 @@ function Player() {
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
   if (safeMode) return <main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>Videowall player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main>
-  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}\nvideos disabled: ${videosDisabled}`}</pre>}</> : <main className="player-message">{status}</main>
+  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}\nvideos disabled: ${videosDisabled}\nraw video: ${rawVideos}`}</pre>}</> : <main className="player-message">{status}</main>
 }
 
-function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean }) {
+function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean; rawVideos?: boolean }) {
   const targetId = useMemo(() => player ? 'player' : 'preview', [player])
   const current = devices.find((item) => item.id === deviceId)
   const legacyDevices = scene.device_ids?.length ? devices.filter((item) => scene.device_ids!.includes(item.id)) : devices
@@ -462,16 +463,16 @@ function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpo
       const top = ((layer.y - (((current.layout_y ?? 0) - originY) / workspaceHeight) * 100) / ((current.layout_height ?? 1) / workspaceHeight))
       const width = layer.width / ((current.layout_width ?? 1) / workspaceWidth)
       const height = layer.height / ((current.layout_height ?? 1) / workspaceHeight)
-      return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
+      return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
     }
-    return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
+    return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} />
   })}</div>
 }
 
-function Layer({ layer, styleOverride, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0 }: { layer: SceneLayer; styleOverride?: CSSProperties; serverEpochOffsetMs?: number; sceneStartedAtMs?: number }) {
+function Layer({ layer, styleOverride, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, rawVideo = false }: { layer: SceneLayer; styleOverride?: CSSProperties; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; rawVideo?: boolean }) {
   const style = { left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})`, ...styleOverride }
   const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }
-  if (layer.type === 'video' && layer.content.url) return <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
+  if (layer.type === 'video' && layer.content.url) return rawVideo ? <video className="media-layer" style={style} src={layer.content.url} autoPlay muted={layer.content.muted !== false} loop={layer.content.loop !== false} playsInline /> : <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
   if (layer.type === 'image' && layer.content.url) return <img className="media-layer" style={style} src={layer.content.url} alt="" />
   if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} serverEpochOffsetMs={serverEpochOffsetMs} />
   if (layer.type === 'ticker') return <div className="ticker-layer" style={{ ...style, ...typography }}><span>{layer.content.text}</span></div>
