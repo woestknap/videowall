@@ -26,7 +26,7 @@
 /* Media-only, freeform wall workspace. */
 .media-workspace { background: #080c16; }
 .media-workspace .device-mask { z-index: 2147483646; outline: 2px solid #9bf6d2; background: transparent; }
-.media-workspace .device-mask span { top: .15rem; left: .2rem; padding: .08rem .16rem; color: #06130d; background: #9bf6d2; font-size: .42rem; line-height: 1.1; font-weight: 750; }
+.media-workspace .device-mask span { top: .08rem; left: .1rem; padding: .03rem .08rem; color: #06130d; background: #9bf6d2; font-size: .25rem; line-height: 1; font-weight: 750; }
 .media-workspace .canvas-layer { transform-origin: center; }
 .screen-list-item > label:nth-child(2) { display: grid; grid-template-columns: auto 1fr; gap: .35rem; align-items: center; color: #aebbd5; font-size: .7rem; }
 .screen-list-item > label:nth-child(2) input { min-width: 0; padding: .3rem; color: #fff; background: #080c16; border: 1px solid #36425d; border-radius: 4px; }
