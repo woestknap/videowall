@@ -25,8 +25,8 @@
 
 /* Media-only, freeform wall workspace. */
 .media-workspace { background: #080c16; }
-.media-workspace .device-mask { z-index: 2147483646; outline: .15px solid #9bf6d2; background: transparent; }
-.media-workspace .device-mask span { top: .04rem; left: .05rem; padding: .015rem .04rem; color: #06130d; background: #9bf6d2; font-size: .32rem; line-height: 1; font-weight: 750; transform-origin: top left; }
+.media-workspace .device-mask { z-index: 2147483646; outline: .03px solid #9bf6d2; background: transparent; }
+.media-workspace .device-mask span { top: .04rem; left: .05rem; padding: .02rem .05rem; color: #06130d; background: #9bf6d2; font-size: .5rem; line-height: 1; font-weight: 750; transform-origin: top left; }
 .media-workspace .canvas-layer { transform-origin: center; }
 .screen-list-item > label:nth-child(2) { display: grid; grid-template-columns: auto 1fr; gap: .35rem; align-items: center; color: #aebbd5; font-size: .7rem; }
 .screen-list-item > label:nth-child(2) input { min-width: 0; padding: .3rem; color: #fff; background: #080c16; border: 1px solid #36425d; border-radius: 4px; }
@@ -36,7 +36,7 @@
 .player-canvas { background: #000; }
 .player-debug { position: fixed; z-index: 2147483647; right: 1rem; bottom: 1rem; margin: 0; padding: .7rem; color: #d8ffe9; background: #07130dcc; border: 1px solid #4bb77c; border-radius: 7px; font: 12px/1.45 monospace; }
 .screen-layer-clip { position: absolute; overflow: hidden; }
-.media-workspace { border-width: .15px; }
-.media-workspace .device-mask { outline-width: .15px; outline-offset: -.15px; }
-.media-workspace .canvas-layer { border-width: .15px; }
-.media-workspace .canvas-layer.selected-layer { border-width: .15px; box-shadow: none; }
+.media-workspace { border-width: .03px; }
+.media-workspace .device-mask { outline-width: .03px; outline-offset: -.03px; }
+.media-workspace .canvas-layer { border-width: 0; }
+.media-workspace .canvas-layer.selected-layer { border-width: .03px; box-shadow: none; }
