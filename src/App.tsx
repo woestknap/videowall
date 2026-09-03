@@ -364,6 +364,7 @@ function Player() {
   const playerParams = new URLSearchParams(location.search)
   const debug = playerParams.get('debug') === '1'
   const safeMode = playerParams.get('safe') === '1'
+  const videosDisabled = playerParams.get('noVideo') === '1'
   const [pin, setPin] = useState('')
   const [device, setDevice] = useState<{ id: string; token: string } | null>(() => { try { return JSON.parse(localStorage.getItem('videowall-device') ?? 'null') } catch { return null } })
   const [scene, setScene] = useState<Scene | null>(null)
@@ -435,10 +436,10 @@ function Player() {
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
   if (safeMode) return <main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>Videowall player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main>
-  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}`}</pre>}</> : <main className="player-message">{status}</main>
+  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}\nvideos disabled: ${videosDisabled}`}</pre>}</> : <main className="player-message">{status}</main>
 }
 
-function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0 }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number }) {
+function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean }) {
   const targetId = useMemo(() => player ? 'player' : 'preview', [player])
   const current = devices.find((item) => item.id === deviceId)
   const legacyDevices = scene.device_ids?.length ? devices.filter((item) => scene.device_ids!.includes(item.id)) : devices
@@ -447,7 +448,7 @@ function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpo
   const dynamicWidth = Math.max(1, ...legacyDevices.map((item) => (item.layout_x ?? 0) + (item.layout_width ?? 1))) - minX
   const dynamicHeight = Math.max(1, ...legacyDevices.map((item) => (item.layout_y ?? 0) + (item.layout_height ?? 1))) - minY
   if (player && deviceId && scene.device_ids?.length && !scene.device_ids.includes(deviceId)) return <div id={targetId} className="player-canvas" />
-  const layers = deviceId ? scene.layers.filter((layer) => !layer.target.length || layer.target.includes(deviceId)) : scene.layers
+  const layers = (deviceId ? scene.layers.filter((layer) => !layer.target.length || layer.target.includes(deviceId)) : scene.layers).filter((layer) => !videosDisabled || layer.type !== 'video')
   return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'} style={player ? { position: 'fixed', inset: 0, overflow: 'hidden', background: '#000' } : undefined}>{layers.map((layer) => {
     if (player && layer.space === 'wall' && current) {
       // Scenes created before the freeform editor use a wall-relative coordinate
