@@ -36,3 +36,7 @@
 .player-canvas { background: #000; }
 .player-debug { position: fixed; z-index: 2147483647; right: 1rem; bottom: 1rem; margin: 0; padding: .7rem; color: #d8ffe9; background: #07130dcc; border: 1px solid #4bb77c; border-radius: 7px; font: 12px/1.45 monospace; }
 .screen-layer-clip { position: absolute; overflow: hidden; }
+.media-workspace { border-width: .4px; }
+.media-workspace .device-mask { outline-width: .4px; outline-offset: -.4px; }
+.media-workspace .canvas-layer { border-width: .4px; }
+.media-workspace .canvas-layer.selected-layer { border-width: .4px; box-shadow: none; }
