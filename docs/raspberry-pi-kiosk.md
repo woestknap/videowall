@@ -58,9 +58,23 @@ sudo timedatectl set-ntp true
 sudo raspi-config
 ```
 
-In raspi-config select **Desktop Autologin**, **Wayland/labwc**, and disable
-**Screen Blanking** (menu names vary by release). Keep normal Raspberry Pi OS
-graphics drivers. Do not add GPU-disable flags or force HDMI connector names.
+Use the terminal menu opened by `sudo raspi-config`, not the desktop Control Centre.
+On current Trixie, make these four selections (arrow keys, Enter, and Tab to Back):
+
+1. **1 System Options → S5 Boot → B2 Desktop**.
+2. **1 System Options → S6 Auto Login**: answer **No** for console auto login,
+   then **Yes** for desktop auto login. These are separate questions.
+3. **6 Advanced Options → A7 Wayland → W2 Labwc**.
+4. **2 Display Options → D2 Screen Blanking**: answer **No** to enabling blanking.
+
+Choose **Finish**. If asked to reboot, you can do so now and reconnect over SSH
+before continuing. Older versions combine steps 1–2 under **System Options →
+Boot / Auto Login → Desktop Autologin**. If neither layout matches, run
+`dpkg-query -W raspi-config` and note the menu labels before changing anything.
+These paths are verified against the [current Raspberry Pi configuration
+documentation](https://www.raspberrypi.com/documentation/computers/configuration.html).
+
+Keep normal Raspberry Pi OS graphics drivers. Do not add GPU-disable flags or force HDMI connector names.
 Configure output resolution/rotation using the desktop's Screen Configuration;
 start Pi 3 trials at 1920×1080 or the attached panel's native lower resolution.
 An SPI/third-party panel must already function as a desktop output with its vendor
