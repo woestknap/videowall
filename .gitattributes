@@ -1,0 +1,4 @@
+kiosk/*.sh text eol=lf
+kiosk/*.py text eol=lf
+kiosk/*.service text eol=lf
+kiosk/*.env text eol=lf

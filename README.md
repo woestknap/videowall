@@ -12,6 +12,9 @@ Personal, browser-based videowall controller built around Raspberry Pi kiosk pla
 
 ## Pi player
 
+For repeatable Raspberry Pi OS Desktop installation, systemd recovery, SSH commands,
+boot diagnostics and media conversion, see [the kiosk guide](docs/raspberry-pi-kiosk.md).
+
 Run Chromium at `https://YOUR-DOMAIN/?player=1` in kiosk mode. Use a Pi 3 for 1080p H.264, images and widgets; reserve Pi 4s for higher-bitrate video or heavier visual effects.
 
 The player first shows a PIN form. Pair it once, then its local device token is retained and it reconnects automatically.

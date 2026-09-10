@@ -1,0 +1,19 @@
+[Unit]
+Description=Videowall Chromium and renderer watchdog
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=90
+EnvironmentFile=%h/.config/videowall/kiosk.env
+ExecStart=/usr/bin/python3 %h/.local/lib/videowall/launcher.py
+Restart=always
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=15
+UMask=0077
+LimitCORE=0
+
+# Started by labwc after importing its actual session environment.
+# Do not enable under default.target or run as root.

@@ -361,6 +361,16 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
 }
 
 function Player() {
+  // Local kiosk watchdog: independent of pairing, media and backend availability.
+  useEffect(() => {
+    let frame = 0
+    const tick = () => {
+      document.documentElement.dataset.playerFrame = String(performance.now())
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => { cancelAnimationFrame(frame); delete document.documentElement.dataset.playerFrame }
+  }, [])
   const playerParams = new URLSearchParams(location.search)
   const debug = playerParams.get('debug') === '1'
   const safeMode = playerParams.get('safe') === '1'
