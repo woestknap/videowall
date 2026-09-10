@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import time
 import urllib.request
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 import websocket
@@ -47,12 +48,18 @@ def ready():
     result = subprocess.run(['wayland-info'], capture_output=True, timeout=10, text=True)
     if result.returncode or 'wl_output' not in result.stdout:
         raise RuntimeError('Wayland is not responding with a display output')
-    # DNS + routing + trusted TLS (including clock) + real application HTML.
+    # Check transport readiness, not whether a Python client can render the app.
+    # Pi #4 receives HTTP 403 here even though Chromium can load the player.
+    # The browser heartbeat below is the authoritative application check.
     request = urllib.request.Request(URL, headers={'Cache-Control': 'no-cache'})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        html = response.read(512 * 1024)
-        if response.status != 200 or b'id="root"' not in html:
-            raise RuntimeError('Player URL did not return application HTML')
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            log(f'HTTPS probe responded {response.status}; checking application in Chromium')
+    except HTTPError as error:
+        # An HTTP error is a response, not a DNS/TLS/connectivity failure.
+        # Keep certificate validation enabled; never spoof browser credentials.
+        log(f'HTTPS probe responded {error.code}; checking application in Chromium')
+        error.close()
 
 
 def healthy(state):

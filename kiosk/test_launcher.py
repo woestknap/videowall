@@ -4,6 +4,8 @@ import unittest
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError, URLError
+import ssl
 
 import launcher
 
@@ -48,13 +50,34 @@ class WatchdogTests(unittest.TestCase):
 
     @patch('launcher.urllib.request.urlopen')
     @patch('launcher.subprocess.run')
-    def test_readiness_rejects_captive_portal(self, run, urlopen):
+    def test_readiness_defers_html_validation_to_browser(self, run, urlopen):
         run.return_value = Mock(returncode=0, stdout='wl_output')
         response = urlopen.return_value.__enter__.return_value
         response.status = 200
         response.read.return_value = b'<html>Sign in to Wi-Fi</html>'
-        with self.assertRaisesRegex(RuntimeError, 'application HTML'):
-            launcher.ready()
+        launcher.ready()
+        response.read.assert_not_called()
+
+    @patch('launcher.urllib.request.urlopen')
+    @patch('launcher.subprocess.run')
+    def test_http_errors_allow_browser_to_attempt_navigation(self, run, urlopen):
+        run.return_value = Mock(returncode=0, stdout='wl_output')
+        for code in (403, 429, 503):
+            with self.subTest(code=code):
+                error = HTTPError(launcher.URL, code, 'HTTP response', {}, None)
+                urlopen.side_effect = error
+                launcher.ready()
+
+    @patch('launcher.urllib.request.urlopen')
+    @patch('launcher.subprocess.run')
+    def test_network_and_certificate_errors_still_block_launch(self, run, urlopen):
+        run.return_value = Mock(returncode=0, stdout='wl_output')
+        for error in (URLError('DNS unavailable'), TimeoutError('connection timeout'),
+                      URLError(ssl.SSLCertVerificationError('certificate invalid'))):
+            with self.subTest(error=error):
+                urlopen.side_effect = error
+                with self.assertRaises(type(error)):
+                    launcher.ready()
 
     def test_unhealthy_renderer_exits_and_terminates_browser(self):
         with tempfile.TemporaryDirectory() as folder:

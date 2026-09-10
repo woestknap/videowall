@@ -141,8 +141,11 @@ are in this repository for inspection.
 
 labwc imports its real `WAYLAND_DISPLAY`, runtime directory and session variables
 into the user systemd manager, then starts the service. `wayland-info` must complete
-and report an output. An HTTPS request to the actual player must return application
-HTML; DNS, routing and certificate/clock failures are logged and retried every five
+and report an output. An HTTPS request to the player must receive a response;
+HTTP errors such as 403 also allow Chromium to start. Pi #4 demonstrated that
+Python's probe can receive 403 while Chromium loads the player successfully.
+The browser heartbeat validates the actual application, not the probe's HTML or
+HTTP status. DNS, routing and certificate/clock failures are logged and retried every five
 seconds. These intervals are condition polling/backoff, not fixed boot delays.
 
 `network-online.target` in the system manager is only a boot milestone, not a
@@ -265,7 +268,8 @@ ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,pix
 ## Primary references
 
 Verification on the development machine (2026-09-10): production TypeScript/Vite
-build passed; eight Python unit tests passed, including readiness retry, browser
+build passed; ten Python unit tests passed, including HTTP 403 handling, TLS/network
+failure handling, readiness retry, browser
 exit and stale-renderer termination; both shell files passed Bash syntax checks.
 The built player displayed its PIN form, advanced its frame marker, and reported
 no browser console errors. Native systemd/labwc behavior and physical Pi startup,
