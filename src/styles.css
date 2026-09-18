@@ -63,6 +63,6 @@
 .screen-details-body > label:first-child { display: grid; grid-template-columns: auto 1fr; gap: .35rem; align-items: center; }
 .screen-details-body > label:first-child input { min-width: 0; padding: .3rem; color: #fff; background: #080c16; border: 1px solid #36425d; border-radius: 4px; }
 
-/* Keep layer placement controls in document flow, aligned with the inspector. */
-.wall-layer-controls { position: static; width: min(280px, calc(100% - 2rem)); max-width: none; margin: 1rem 1rem 1rem auto; display: grid; align-items: stretch; gap: .75rem; box-shadow: none; }
+/* Keep layer placement controls in the left editor sidebar. */
+.wall-layer-controls { position: static; width: 100%; max-width: none; margin: 0; display: grid; align-items: stretch; gap: .75rem; box-shadow: none; }
 .wall-layer-controls select { margin-left: 0; }
