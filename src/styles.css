@@ -48,3 +48,21 @@
 .layer-plane .ticker-layer { font-size: 2.5cqw; }
 .screen-list-item .screen-measurements label { display: grid; grid-template-columns: 1fr; }
 .screen-list-item .screen-measurements { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
+
+/* Editor guides stay one physical pixel because App counter-scales this value. */
+:root { --videowall-guide-width: 1px; }
+
+/* Device settings collapse into compact headers. */
+.screen-list-item { display: block; padding: 0; }
+.screen-list-item > summary { display: flex; align-items: center; gap: .45rem; padding: .55rem; color: #e9ecf5; font-size: .82rem; font-weight: 700; cursor: pointer; list-style: none; }
+.screen-list-item > summary::-webkit-details-marker { display: none; }
+.screen-list-item > summary::after { content: '›'; margin-left: auto; color: #8d99b7; transition: transform .15s ease; }
+.screen-list-item[open] > summary::after { transform: rotate(90deg); }
+.screen-list-item > summary input { margin: 0; accent-color: #9bf6d2; }
+.screen-list-item > .screen-details-body { display: grid; grid-template-columns: 1fr; gap: .45rem; padding: .55rem; border-top: 1px solid #293752; }
+.screen-details-body > label:first-child { display: grid; grid-template-columns: auto 1fr; gap: .35rem; align-items: center; }
+.screen-details-body > label:first-child input { min-width: 0; padding: .3rem; color: #fff; background: #080c16; border: 1px solid #36425d; border-radius: 4px; }
+
+/* Keep layer placement controls in document flow, aligned with the inspector. */
+.wall-layer-controls { position: static; width: min(280px, calc(100% - 2rem)); max-width: none; margin: 1rem 1rem 1rem auto; display: grid; align-items: stretch; gap: .75rem; box-shadow: none; }
+.wall-layer-controls select { margin-left: 0; }

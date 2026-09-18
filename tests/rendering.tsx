@@ -61,7 +61,7 @@ function Fixture() {
     <div data-excluded style={{ width: 400, height: 240 }}><ScenePreview scene={{ ...scene, device_ids: ['tr'] }} devices={devices} deviceId="tl" player embedded /></div>
     {/* Geometry-only video elements: decoding and playback need separate device tests. */}
     {[false, true].map(raw => <div data-video key={String(raw)} style={{ width: 400, height: 240 }}><ScenePreview scene={{ ...scene, layers: [{ ...layer, type: 'video', content: { url: 'data:video/webm;base64,' } }] }} devices={devices} deviceId="br" player embedded rawVideos={raw} /></div>)}
-    <div className="screen-list-item" style={{ width: 300 }}><ScreenLayoutControls device={screen} onChange={change => setScreen({ ...screen, ...change })} /></div>
+    <details className="screen-list-item" style={{ width: 300 }}><summary><input aria-label="Use tl in this scene" type="checkbox" defaultChecked onClick={event => event.stopPropagation()} /><span>tl</span></summary><div className="screen-details-body"><ScreenLayoutControls device={screen} onChange={change => setScreen({ ...screen, ...change })} /></div></details>
     <output>{JSON.stringify({ width: screen.layout_width, height: screen.layout_height, auto: screen.auto_size })}</output>
   </main>
 }
