@@ -50,11 +50,11 @@
 .screen-list-item .screen-measurements { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
 
 /*
- * Guides are projected into this unscaled overlay. A CSS 1px border therefore
- * remains one screen pixel even when the workspace below it is zoomed.
+ * Guides are projected into this unscaled overlay. Their fixed screen width
+ * remains unchanged even when the workspace below it is zoomed.
  */
 .editor-guide-overlay { position: absolute; z-index: 2147483646; inset: 0; pointer-events: none; }
-.editor-guide { position: absolute; box-sizing: border-box; border: 1px solid #9bf6d2; }
+.editor-guide { position: absolute; box-sizing: border-box; border: 4px solid #9bf6d2; }
 .editor-stage-guide { border-color: #415275; }
 .editor-layer-guide { border-color: #9bf6d2; }
 .media-workspace, .media-workspace .device-mask, .media-workspace .canvas-layer.selected-layer { outline: 0; }
