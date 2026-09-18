@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type WheelEvent } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type WheelEvent } from 'react'
 import { isConfigured, supabase } from './lib/supabase'
 import type { Device, Scene, SceneLayer, Wall } from './types'
+import { WALL_WORKSPACE_WIDTH, WALL_WORKSPACE_HEIGHT, WORKSPACE, bounds, deviceRect, sceneDevices, layerReference, toWorkspaceLayer, planeTransform, fitLayerToDevices } from './lib/wallGeometry'
+import { ScreenLayoutControls } from './ScreenLayoutControls'
 
 const starterScene: Scene = {
   id: 'preview', name: 'Welcome', duration_seconds: 60,
@@ -9,11 +11,6 @@ const starterScene: Scene = {
     { id: 'clock', type: 'clock', target: [], x: 8, y: 60, width: 45, height: 24, zIndex: 2, content: { timezone: 'Europe/Amsterdam' } },
   ],
 }
-
-// A fixed virtual workspace makes display placement independent: moving one
-// physical screen never rescales or shifts the others in the editor.
-const WALL_WORKSPACE_WIDTH = 7680
-const WALL_WORKSPACE_HEIGHT = 4320
 
 function App() {
   const player = new URLSearchParams(location.search).get('player') === '1'
@@ -76,7 +73,7 @@ function Admin() {
 
   useEffect(() => {
     if (!supabase || !activeWall) return
-    void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height').eq('wall_id', activeWall).order('created_at')
+    void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').eq('wall_id', activeWall).order('created_at')
       .then(({ data }) => setDevices(data ?? []))
   }, [activeWall])
 
@@ -162,7 +159,7 @@ function Admin() {
       <article className="panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>
         <div className="wall-preview">{devices.length ? devices.map((device, index) => <div className="screen-card" key={device.id}><span>{index + 1}</span><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small><button className="danger" onClick={() => void deleteDevice(device)}>Remove Pi</button></div>) : <p>Pair a Pi to start building your wall.</p>}</div>
       </article>
-      <article className="panel"><div className="panel-heading"><div><p className="eyebrow">SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} /></article>
+      <article className="panel"><div className="panel-heading"><div><p className="eyebrow">SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} /></article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>
         {scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}
       </article>
@@ -204,6 +201,8 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [drag, setDrag] = useState<{ id: string; offsetX: number; offsetY: number; deviceId?: string } | null>(null)
   const [deviceDrag, setDeviceDrag] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null)
   const [layoutDirty, setLayoutDirty] = useState(false)
+  const [devicesLoaded, setDevicesLoaded] = useState(false)
+  const stageRef = useRef<HTMLDivElement>(null)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null)
@@ -217,7 +216,10 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
       setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '')
     })
   }, [sceneId])
-  useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data }) => setDevices(data ?? [])) }, [])
+  useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => {
+    if (error) { setNotice(error.message); return }
+    setDevices(data ?? []); setDevicesLoaded(true)
+  }) }, [])
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }
     const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }
@@ -231,8 +233,9 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     return () => { document.documentElement.style.removeProperty('--videowall-guide-width') }
   }, [zoom])
 
-  if (!scene) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
-  const currentScene = scene
+  if (!scene || !devicesLoaded) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
+  const currentScene = { ...scene, layers: scene.layers.map(layer => toWorkspaceLayer(layer, scene, devices)) }
+  const activeDevices = sceneDevices(currentScene, devices)
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
   const isSceneDevice = (deviceId: string) => !currentScene.device_ids?.length || currentScene.device_ids.includes(deviceId)
   function updateLayer(id: string, change: Partial<SceneLayer>) { setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) }) }
@@ -261,7 +264,10 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   async function saveLayout() {
     if (!supabase) return
     const client = supabase
-    const results = await Promise.all(devices.map(({ id, name, layout_x, layout_y, layout_width, layout_height, auto_size }) => client.from('devices').update({ name, layout_x, layout_y, layout_width, layout_height, auto_size }).eq('id', id)))
+    // Save only explicit geometry for manual layouts; automatic dimensions can
+    // have been refreshed by a Pi since the editor opened.
+    const results = await Promise.all(devices.map(({ id, name, layout_x, layout_y, layout_width, layout_height, auto_size }) => client.from('devices').update({ name, layout_x, layout_y, auto_size,
+      ...(auto_size === false ? { layout_width, layout_height } : {}) }).eq('id', id)))
     const error = results.find((result) => result.error)?.error
     if (error) return setNotice(error.message)
     setLayoutDirty(false); setNotice('Physical screen layout saved.')
@@ -325,7 +331,16 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   }
   function zoomCanvas(event: WheelEvent<HTMLElement>) {
     event.preventDefault()
-    setZoom((current) => Math.max(.2, Math.min(12, Number((current * (event.deltaY < 0 ? 1.18 : .85)).toFixed(3)))))
+    setZoom((current) => Math.max(.2, Math.min(128, Number((current * (event.deltaY < 0 ? 1.18 : .85)).toFixed(3)))))
+  }
+  function fitScreens() {
+    const stage = stageRef.current
+    if (!stage || !activeDevices.length) return
+    const box = bounds(activeDevices.map(deviceRect))
+    const nextZoom = Math.max(.2, Math.min(128, .8 * Math.min(WALL_WORKSPACE_WIDTH / box.width, WALL_WORKSPACE_HEIGHT / box.height)))
+    setZoom(nextZoom)
+    setPan({ x: (0.5 - (box.x + box.width / 2) / WALL_WORKSPACE_WIDTH) * stage.clientWidth * nextZoom,
+      y: (0.5 - (box.y + box.height / 2) / WALL_WORKSPACE_HEIGHT) * stage.clientHeight * nextZoom })
   }
   function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) {
     if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return
@@ -343,21 +358,27 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
     if (!selected) return
     const change: Partial<SceneLayer> = { [key]: value }
     if (selected.lockedAspect && selected.aspectRatio) {
-      if (key === 'width') change.height = value * (16 / 9) / selected.aspectRatio
-      else change.width = value * selected.aspectRatio / (16 / 9)
+      const target = activeDevices.find(item => !selected.target.length || selected.target.includes(item.id))
+      const reference = layerReference(selected, currentScene, devices, target)
+      if (key === 'width') change.height = value * (reference.width / reference.height) / selected.aspectRatio
+      else change.width = value * selected.aspectRatio / (reference.width / reference.height)
     }
     updateLayer(selected.id, change)
   }
   function renderEditorMedia(layer: SceneLayer) {
-    return layer.type === 'image' && layer.content.url ? <img src={layer.content.url} alt="" onLoad={(event) => setMediaSize(layer.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={(event) => setMediaSize(layer.id, event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
+    return <EditorMedia layer={layer} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
   }
   return <main className="editor-page">
     <header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><div className="editor-actions"><button className="secondary" disabled={!layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header>
-    <div className="editor-layout"><aside className="editor-toolbar"><div className="screen-list"><p className="eyebrow">SCREENS IN THIS SCENE</p><small>Choose the displays used in this scene. Drag their labels freely on the workspace.</small>{devices.map((item) => <div className="screen-list-item" key={item.id}><label><input type="checkbox" checked={isSceneDevice(item.id)} onChange={() => toggleSceneDevice(item.id)} /> <span>{item.name}</span></label><label>Name<input value={item.name} onChange={(event) => updateDeviceLayout(item.id, { name: event.target.value })} /></label><label><input type="checkbox" checked={item.auto_size !== false} onChange={(event) => updateDeviceLayout(item.id, { auto_size: event.target.checked, ...(event.target.checked && item.width && item.height ? { layout_width: item.width, layout_height: item.height } : {}) })} /> Auto-detect Pi size {item.width && item.height ? `(${item.width} × ${item.height})` : '(waiting for Pi)'}</label><div><label>W<input type="number" min="1" disabled={item.auto_size !== false} value={item.layout_width ?? 1920} onChange={(event) => updateDeviceLayout(item.id, { layout_width: Math.max(1, Number(event.target.value)) })} /></label><label>H<input type="number" min="1" disabled={item.auto_size !== false} value={item.layout_height ?? 1080} onChange={(event) => updateDeviceLayout(item.id, { layout_height: Math.max(1, Number(event.target.value)) })} /></label></div></div>)}</div><p className="eyebrow">ADD MEDIA</p><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button><small>Screen outlines stay above media. Drag a screen label to position that display independently.</small></aside>
-      <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => setZoom((current) => Math.max(.2, current - .2))}>−</button><span>{Math.round(zoom * 100)}%</span><button className="secondary" onClick={() => setZoom((current) => Math.min(12, current + .2))}>+</button><button className="secondary" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Reset</button></div><div className={`editor-stage media-workspace ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }} onPointerCancel={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }}>{currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? devices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%`, zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{renderEditorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{renderEditorMedia(layer)}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'}`} key={item.id} style={{ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%` }}><span style={{ transform: `scale(${1 / zoom})` }} onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div><p className="canvas-hint">Scroll to zoom · hold Space and drag, or use middle mouse, to pan.</p></section>
-      <aside className="inspector"><p className="eyebrow">{selected ? 'MEDIA LAYER' : 'INSPECTOR'}</p>{selected ? <><label>Type<select value={selected.type} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option></select></label><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label><label><input type="checkbox" checked={selected.lockedAspect !== false} onChange={(event) => updateLayer(selected.id, { lockedAspect: event.target.checked })} /> Lock media aspect ratio</label><label>Rotation (degrees)<input type="number" value={selected.rotation ?? 0} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })} /></label><label>Scale<input type="number" min="0.1" max="5" step="0.01" value={selected.scale ?? 1} onChange={(event) => updateLayer(selected.id, { scale: Math.max(.1, Number(event.target.value)) })} /></label><div className="stack-controls"><button className="secondary" onClick={() => moveLayer('up')}>Bring forward</button><button className="secondary" onClick={() => moveLayer('down')}>Send backward</button></div><div className="position-grid"><label>x<input type="number" value={selected.x} onChange={(event) => updateLayer(selected.id, { x: Number(event.target.value) })} /></label><label>y<input type="number" value={selected.y} onChange={(event) => updateLayer(selected.id, { y: Number(event.target.value) })} /></label><label>width<input type="number" min="0" value={selected.width} onChange={(event) => updateDimension('width', Number(event.target.value))} /></label><label>height<input type="number" min="0" value={selected.height} onChange={(event) => updateDimension('height', Number(event.target.value))} /></label></div><button className="danger" onClick={removeSelected}>Remove layer</button></> : <p>Select an image or video layer to edit it.</p>}</aside>
+    <div className="editor-layout"><aside className="editor-toolbar"><div className="screen-list"><p className="eyebrow">SCREENS IN THIS SCENE</p><small>Choose displays, then place their lit image areas. Left/Top include bezels and gaps. Save screen layout to apply changes to the players.</small>{devices.map((item) => <div className="screen-list-item" key={item.id}><label><input type="checkbox" checked={isSceneDevice(item.id)} onChange={() => toggleSceneDevice(item.id)} /> <span>{item.name}</span></label><label>Name<input value={item.name} onChange={(event) => updateDeviceLayout(item.id, { name: event.target.value })} /></label><ScreenLayoutControls device={item} onChange={change => updateDeviceLayout(item.id, change)} /></div>)}</div>{activeDevices.some(d => d.auto_size === false) && activeDevices.some(d => d.auto_size !== false) && <p className="notice">Mixed layout units: enter measured sizes for every selected screen before aligning them.</p>}<p className="eyebrow">ADD MEDIA</p><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button><small>Screen outlines stay above media. Drag a screen label to position that display independently.</small></aside>
+      <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => setZoom((current) => Math.max(.2, current - .2))}>−</button><span>{Math.round(zoom * 100)}%</span><button className="secondary" onClick={() => setZoom((current) => Math.min(128, current + .2))}>+</button><button className="secondary" onClick={fitScreens}>Fit screens</button><button className="secondary" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Reset</button></div><div ref={stageRef} className={`editor-stage media-workspace ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }} onPointerCancel={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }}>{currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? devices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%`, zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{renderEditorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{renderEditorMedia(layer)}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'}`} key={item.id} style={{ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%` }}><span style={{ transform: `scale(${1 / zoom})` }} onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div><p className="canvas-hint">Scroll to zoom · hold Space and drag, or use middle mouse, to pan.</p></section>
+      <aside className="inspector"><p className="eyebrow">{selected ? 'MEDIA LAYER' : 'INSPECTOR'}</p>{selected ? <><label>Type<select value={selected.type} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option></select></label><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label><label><input type="checkbox" checked={selected.lockedAspect !== false} onChange={(event) => updateLayer(selected.id, { lockedAspect: event.target.checked })} /> Lock media aspect ratio</label><button className="secondary" disabled={!activeDevices.length} onClick={() => updateLayer(selected.id, fitLayerToDevices(selected, activeDevices))}>Fit layer to selected screens</button><label>Image fit<select value={selected.content.fit ?? 'cover'} onChange={event => updateLayer(selected.id, { content: { ...selected.content, fit: event.target.value as 'cover' | 'contain' } })}><option value="cover">Fill layer (crop edges)</option><option value="contain">Show whole image</option></select></label><label>Rotation (degrees)<input type="number" value={selected.rotation ?? 0} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })} /></label><label>Scale<input type="number" min="0.1" max="5" step="0.01" value={selected.scale ?? 1} onChange={(event) => updateLayer(selected.id, { scale: Math.max(.1, Number(event.target.value)) })} /></label><div className="stack-controls"><button className="secondary" onClick={() => moveLayer('up')}>Bring forward</button><button className="secondary" onClick={() => moveLayer('down')}>Send backward</button></div><div className="position-grid"><label>x<input type="number" value={selected.x} onChange={(event) => updateLayer(selected.id, { x: Number(event.target.value) })} /></label><label>y<input type="number" value={selected.y} onChange={(event) => updateLayer(selected.id, { y: Number(event.target.value) })} /></label><label>width<input type="number" min="0" value={selected.width} onChange={(event) => updateDimension('width', Number(event.target.value))} /></label><label>height<input type="number" min="0" value={selected.height} onChange={(event) => updateDimension('height', Number(event.target.value))} /></label></div><button className="danger" onClick={removeSelected}>Remove layer</button></> : <p>Select an image or video layer to edit it.</p>}</aside>
     </div>{selected && <section className="wall-layer-controls"><label>Layer canvas<select value={selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}><option value="screen">One copy on each selected display</option><option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span>{devices.map((item) => <label key={item.id} className={!isSceneDevice(item.id) ? 'disabled-target' : ''}><input type="checkbox" disabled={!isSceneDevice(item.id)} checked={isSceneDevice(item.id) && (!selected.target.length || selected.target.includes(item.id))} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div></section>}{notice && <p className="editor-notice">{notice}</p>}
   </main>
+}
+
+export function EditorMedia({ layer, onSize }: { layer: SceneLayer; onSize: (width: number, height: number) => void }) {
+  return layer.type === 'image' && layer.content.url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
 }
 
 function Player() {
@@ -450,37 +471,45 @@ function Player() {
   return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}\nvideos disabled: ${videosDisabled}\nraw video: ${rawVideos}`}</pre>}</> : <main className="player-message">{status}</main>
 }
 
-function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean; rawVideos?: boolean }) {
-  const targetId = useMemo(() => player ? 'player' : 'preview', [player])
-  const current = devices.find((item) => item.id === deviceId)
-  const legacyDevices = scene.device_ids?.length ? devices.filter((item) => scene.device_ids!.includes(item.id)) : devices
-  const minX = Math.min(0, ...legacyDevices.map((item) => item.layout_x ?? 0))
-  const minY = Math.min(0, ...legacyDevices.map((item) => item.layout_y ?? 0))
-  const dynamicWidth = Math.max(1, ...legacyDevices.map((item) => (item.layout_x ?? 0) + (item.layout_width ?? 1))) - minX
-  const dynamicHeight = Math.max(1, ...legacyDevices.map((item) => (item.layout_y ?? 0) + (item.layout_height ?? 1))) - minY
-  if (player && deviceId && scene.device_ids?.length && !scene.device_ids.includes(deviceId)) return <div id={targetId} className="player-canvas" />
-  const layers = (deviceId ? scene.layers.filter((layer) => !layer.target.length || layer.target.includes(deviceId)) : scene.layers).filter((layer) => !videosDisabled || layer.type !== 'video')
-  return <div id={targetId} className={player ? 'player-canvas' : 'scene-preview'} style={player ? { position: 'fixed', inset: 0, overflow: 'hidden', background: '#000' } : undefined}>{layers.map((layer) => {
-    if (player && layer.space === 'wall' && current) {
-      // Scenes created before the freeform editor use a wall-relative coordinate
-      // system. Preserve that mapping so the layout migration never blanks them.
-      const freeform = layer.coordinateSpace === 'freeform' || layer.aspectRatio !== undefined
-      const workspaceWidth = freeform ? WALL_WORKSPACE_WIDTH : dynamicWidth
-      const workspaceHeight = freeform ? WALL_WORKSPACE_HEIGHT : dynamicHeight
-      const originX = freeform ? 0 : minX
-      const originY = freeform ? 0 : minY
-      const left = ((layer.x - (((current.layout_x ?? 0) - originX) / workspaceWidth) * 100) / ((current.layout_width ?? 1) / workspaceWidth))
-      const top = ((layer.y - (((current.layout_y ?? 0) - originY) / workspaceHeight) * 100) / ((current.layout_height ?? 1) / workspaceHeight))
-      const width = layer.width / ((current.layout_width ?? 1) / workspaceWidth)
-      const height = layer.height / ((current.layout_height ?? 1) / workspaceHeight)
-      return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} styleOverride={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }} />
-    }
-    return <Layer key={layer.id} layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} />
-  })}</div>
+export function ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false, embedded = false }: { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean; rawVideos?: boolean; embedded?: boolean }) {
+  const root = useRef<HTMLDivElement>(null)
+  const [viewport, setViewport] = useState({ width: 0, height: 0 })
+  useEffect(() => {
+    const element = root.current
+    if (!element) return
+    const update = () => setViewport({ width: element.clientWidth, height: element.clientHeight })
+    update()
+    const observer = new ResizeObserver(([entry]) => {
+      // Fractional preview sizes must survive to avoid seams between displays.
+      setViewport({ width: entry.contentRect.width, height: entry.contentRect.height })
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+  const current = devices.find(item => item.id === deviceId)
+  const activeDevices = sceneDevices(scene, devices)
+  const view = player && current ? deviceRect(current) : activeDevices.length ? bounds(activeDevices.map(deviceRect)) : WORKSPACE
+  const excluded = player && deviceId && scene.device_ids?.length && !scene.device_ids.includes(deviceId)
+  const layers = excluded ? [] : scene.layers.filter(layer => (!deviceId || !layer.target.length || layer.target.includes(deviceId)) && (!videosDisabled || layer.type !== 'video'))
+  return <div ref={root} className={player ? 'player-canvas' : 'scene-preview'} style={player ? { position: embedded ? 'relative' : 'fixed', inset: 0, width: embedded ? '100%' : '100vw', height: embedded ? '100%' : '100vh', overflow: 'hidden', background: '#000' } : { aspectRatio: `${view.width} / ${view.height}` }}>
+    {!player && activeDevices.length ? activeDevices.map(device => {
+      const box = deviceRect(device)
+      return <div key={device.id} style={{ position: 'absolute', left: `${(box.x - view.x) / view.width * 100}%`, top: `${(box.y - view.y) / view.height * 100}%`, width: `${box.width / view.width * 100}%`, height: `${box.height / view.height * 100}%` }}>
+        <ScenePreview scene={scene} devices={devices} deviceId={device.id} player embedded serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} />
+      </div>
+    }) : viewport.width > 0 && layers.map(layer => {
+      const reference = layerReference(layer, scene, devices, player ? current : undefined)
+      // Fit/crop/rotate in shared coordinates, then project into this viewport.
+      // The viewport clips the full layer; the layer is never capped at one screen.
+      return <div className="layer-plane" key={layer.id} style={{ position: 'absolute', left: 0, top: 0, width: reference.width, height: reference.height, zIndex: layer.zIndex, transformOrigin: '0 0', transform: planeTransform(reference, player && !current ? reference : view, viewport.width, viewport.height) }}>
+        <Layer layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} />
+      </div>
+    })}
+  </div>
 }
 
-function Layer({ layer, styleOverride, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, rawVideo = false }: { layer: SceneLayer; styleOverride?: CSSProperties; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; rawVideo?: boolean }) {
-  const style = { left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})`, ...styleOverride }
+function Layer({ layer, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, rawVideo = false }: { layer: SceneLayer; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; rawVideo?: boolean }) {
+  const style: CSSProperties = { objectFit: layer.content.fit ?? 'cover', left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }
   const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }
   if (layer.type === 'video' && layer.content.url) return rawVideo ? <video className="media-layer" style={style} src={layer.content.url} autoPlay muted={layer.content.muted !== false} loop={layer.content.loop !== false} playsInline /> : <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
   if (layer.type === 'image' && layer.content.url) return <img className="media-layer" style={style} src={layer.content.url} alt="" />

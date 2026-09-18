@@ -18,3 +18,14 @@ boot diagnostics and media conversion, see [the kiosk guide](docs/raspberry-pi-k
 Run Chromium at `https://YOUR-DOMAIN/?player=1` in kiosk mode. Use a Pi 3 for 1080p H.264, images and widgets; reserve Pi 4s for higher-bitrate video or heavier visual effects.
 
 The player first shows a PIN form. Pair it once, then its local device token is retained and it reconnects automatically.
+
+## Screen alignment and mixed sizes
+
+See [display calibration](docs/display-calibration.md) for the 150 × 85 mm Pi panels,
+screen positions, bezel gaps, and mixing these panels with larger TVs.
+
+With Node.js 22.18+ or 24, run `npm run test:geometry` for coordinate regression tests.
+Run `npm run dev`, then open `/tests/rendering.html` for the browser regression
+fixture. It uses the real editor media and player components without backend writes;
+the page reports PASS or the failing checks. Video checks cover element geometry,
+not codec decoding or synchronization on a Pi. Run `npm run build` before deployment.
