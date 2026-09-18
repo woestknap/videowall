@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type P
 import { isConfigured, supabase } from './lib/supabase'
 import type { Device, Scene, SceneLayer, Wall } from './types'
 import { WALL_WORKSPACE_WIDTH, WALL_WORKSPACE_HEIGHT, WORKSPACE, bounds, deviceRect, sceneDevices, layerReference, toWorkspaceLayer, planeTransform, fitLayerToDevices } from './lib/wallGeometry'
+import { panForCursorZoom } from './lib/editorZoom'
 import { ScreenLayoutControls } from './ScreenLayoutControls'
 
 const starterScene: Scene = {
@@ -331,7 +332,13 @@ function SceneEditorPage({ sceneId }: { sceneId: string }) {
   }
   function zoomCanvas(event: WheelEvent<HTMLElement>) {
     event.preventDefault()
-    setZoom((current) => Math.max(.2, Math.min(128, Number((current * (event.deltaY < 0 ? 1.18 : .85)).toFixed(3)))))
+    const nextZoom = Math.max(.2, Math.min(128, Number((zoom * (event.deltaY < 0 ? 1.18 : .85)).toFixed(3))))
+    const stage = stageRef.current
+    if (stage && nextZoom !== zoom) {
+      const box = stage.getBoundingClientRect()
+      setPan(current => panForCursorZoom({ pan: current, zoom, nextZoom, stage: box, cursor: { x: event.clientX, y: event.clientY } }))
+    }
+    setZoom(nextZoom)
   }
   function fitScreens() {
     const stage = stageRef.current

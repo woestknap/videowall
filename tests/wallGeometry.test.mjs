@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { WORKSPACE, bounds, deviceRect, layerReference, toWorkspaceLayer, planeTransform, fitLayerToDevices } from '../src/lib/wallGeometry.ts'
+import { panForCursorZoom } from '../src/lib/editorZoom.ts'
 
 const device = (id, x, y, width = 800, height = 480) => ({ id, layout_x: x, layout_y: y, layout_width: width, layout_height: height })
 const four = [device('tl', 0, 0), device('tr', 800, 0), device('bl', 0, 480), device('br', 800, 480)]
@@ -53,4 +54,13 @@ test('screen-local layers and targeted fit use the intended displays only', () =
   close(fit.width / 100 * 7680, 800)
   close(fit.height / 100 * 4320, 960)
   assert.deepEqual(bounds([deviceRect(device('a', -100, -50, 150, 85))]), { x: -100, y: -50, width: 150, height: 85 })
+})
+
+test('wheel zoom keeps the cursor workspace coordinate fixed', () => {
+  const stage = { left: 100, top: 200, width: 800, height: 450 }
+  const pan = panForCursorZoom({ pan: { x: 40, y: -25 }, zoom: 2, nextZoom: 3, stage, cursor: { x: 300, y: 425 } })
+  // At 25% across and 50% down, the point remains at the same screen position.
+  close(pan.x, 140)
+  close(pan.y, -25)
+  assert.deepEqual(panForCursorZoom({ pan, zoom: 0, nextZoom: 3, stage, cursor: { x: 300, y: 425 } }), pan)
 })
