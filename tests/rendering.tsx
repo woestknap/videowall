@@ -62,6 +62,7 @@ function Fixture() {
     {/* Geometry-only video elements: decoding and playback need separate device tests. */}
     {[false, true].map(raw => <div data-video key={String(raw)} style={{ width: 400, height: 240 }}><ScenePreview scene={{ ...scene, layers: [{ ...layer, type: 'video', content: { url: 'data:video/webm;base64,' } }] }} devices={devices} deviceId="br" player embedded rawVideos={raw} /></div>)}
     <details className="screen-list-item" style={{ width: 300 }}><summary><input aria-label="Use tl in this scene" type="checkbox" defaultChecked onClick={event => event.stopPropagation()} /><span>tl</span></summary><div className="screen-details-body"><ScreenLayoutControls device={screen} onChange={change => setScreen({ ...screen, ...change })} /></div></details>
+    <aside className="editor-toolbar" style={{ width: 220, marginTop: 20 }}><section className="wall-layer-controls" data-layer-sidebar><label>Layer canvas<select defaultValue="wall"><option value="screen">One copy on each selected display</option><option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span><label><input type="checkbox" defaultChecked /> tl</label><label><input type="checkbox" defaultChecked /> tr</label></div></section></aside>
     <output>{JSON.stringify({ width: screen.layout_width, height: screen.layout_height, auto: screen.auto_size })}</output>
   </main>
 }

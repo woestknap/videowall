@@ -63,6 +63,11 @@
 .screen-details-body > label:first-child { display: grid; grid-template-columns: auto 1fr; gap: .35rem; align-items: center; }
 .screen-details-body > label:first-child input { min-width: 0; padding: .3rem; color: #fff; background: #080c16; border: 1px solid #36425d; border-radius: 4px; }
 
-/* Keep layer placement controls in the left editor sidebar. */
-.wall-layer-controls { position: static; width: 100%; max-width: none; margin: 0; display: grid; align-items: stretch; gap: .75rem; box-shadow: none; }
-.wall-layer-controls select { margin-left: 0; }
+/* Layer controls share the left sidebar's compact field treatment. */
+.editor-toolbar .wall-layer-controls { position: static; z-index: auto; width: auto; max-width: none; margin: 0; padding: .6rem 0; display: grid; align-items: stretch; gap: .55rem; border: 0; border-top: 1px solid #28344c; border-radius: 0; background: transparent; box-shadow: none; }
+.editor-toolbar .wall-layer-controls > label { gap: .3rem; color: #aebbd5; font-size: .7rem; }
+.editor-toolbar .wall-layer-controls select { width: 100%; min-width: 0; margin: 0; padding: .3rem; color: #fff; background: #080c16; border: 1px solid #36425d; border-radius: 4px; }
+.editor-toolbar .target-picker { gap: .35rem; color: #aebbd5; font-size: .7rem; }
+.editor-toolbar .target-picker > span { color: #8d99b7; font-size: .7rem; font-weight: 800; letter-spacing: .08em; }
+.editor-toolbar .target-picker label { display: flex; align-items: center; gap: .4rem; }
+.editor-toolbar .target-picker input { width: auto; margin: 0; }
