@@ -50,14 +50,12 @@
 .screen-list-item .screen-measurements { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
 
 /*
- * Guides are projected into this unscaled overlay. Their fixed screen width
- * remains unchanged even when the workspace below it is zoomed.
+ * Each guide expands with its object, then counter-scales by the current
+ * workspace zoom. The object keeps its normal size; the guide remains 4px.
  */
-.editor-guide-overlay { position: absolute; z-index: 2147483646; inset: 0; pointer-events: none; }
-.editor-guide { position: absolute; box-sizing: border-box; border: 4px solid #9bf6d2; }
-.editor-stage-guide { border-color: #415275; }
-.editor-layer-guide { border-color: #9bf6d2; }
 .media-workspace, .media-workspace .device-mask, .media-workspace .canvas-layer.selected-layer { outline: 0; }
+.media-workspace::after, .media-workspace .device-mask::after, .media-workspace .canvas-layer.selected-layer::after { content: ''; position: absolute; box-sizing: border-box; pointer-events: none; left: var(--guide-inset); top: var(--guide-inset); width: var(--guide-size); height: var(--guide-size); border: 4px solid #9bf6d2; transform: scale(var(--guide-scale)); transform-origin: center; }
+.media-workspace::after { border-color: #415275; }
 
 /* Device settings collapse into compact headers. */
 .screen-list-item { display: block; padding: 0; }
