@@ -33,6 +33,19 @@ function WallLayoutOverview({ devices }: { devices: Device[] }) {
   </div>
 }
 
+function deviceStatus(device: Device) {
+  const lastSeenAt = device.last_seen_at ? Date.parse(device.last_seen_at) : NaN
+  if (!Number.isFinite(lastSeenAt)) return { label: 'Waiting to be seen', tone: 'waiting' }
+  return Date.now() - lastSeenAt <= 10 * 60 * 1000
+    ? { label: 'Recently seen', tone: 'recent' }
+    : { label: 'Not seen recently', tone: 'stale' }
+}
+
+function DashboardDeviceRow({ device, index, onRemove }: { device: Device; index: number; onRemove: (device: Device) => void }) {
+  const status = deviceStatus(device)
+  return <div className="dashboard-device-row"><span>{index + 1}</span><div><strong>{device.name}</strong><small className={`device-status is-${status.tone}`}>{status.label}</small></div><div className="dashboard-device-maintenance"><span>Maintenance</span><button className="maintenance-action" onClick={() => onRemove(device)}>Remove Pi</button></div></div>
+}
+
 export function Admin() {
   const [walls, setWalls] = useState<Wall[]>([])
   const [devices, setDevices] = useState<Device[]>([])
@@ -116,13 +129,14 @@ export function Admin() {
     {!isConfigured && <div className="alert">Add your Supabase values to <code>.env</code> using <code>.env.example</code>, then apply the migration in <code>supabase/migrations</code>.</div>}
     <section className="toolbar dashboard-toolbar">
       <div className="dashboard-wall-picker"><p className="eyebrow">CURRENT WALL</p><label>Wall <select value={activeWall} onChange={(event) => setActiveWall(event.target.value)}><option value="">Select a wall</option>{walls.map((wall) => <option key={wall.id} value={wall.id}>{wall.name}</option>)}</select></label></div>
-      <div className="dashboard-wall-actions"><button className="secondary" onClick={() => void createWall()}>+ Wall</button><button className="danger" disabled={!activeWall} onClick={() => void deleteWall()}>Delete wall</button><button disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button></div>
+      <div className="dashboard-wall-actions"><button className="secondary" onClick={() => void createWall()}>+ Wall</button><button disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button></div>
       {pin && <div className="pin">PIN <strong>{pin}</strong><small>Open {location.origin}/?player=1</small></div>}
+      <div className="dashboard-wall-maintenance"><span>Maintenance</span><button className="maintenance-action" disabled={!activeWall} onClick={() => void deleteWall()}>Delete wall</button></div>
     </section>
     {notice && <p className="notice">{notice}</p>}
     <section className="dashboard-grid">
       <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} /></article>
-      <article className="panel dashboard-screens-panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>{devices.length ? <><WallLayoutOverview devices={devices} /><div className="dashboard-device-list">{devices.map((device, index) => <div className="dashboard-device-row" key={device.id}><span>{index + 1}</span><div><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small></div><button className="danger" onClick={() => void deleteDevice(device)}>Remove Pi</button></div>)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
+      <article className="panel dashboard-screens-panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>{devices.length ? <><WallLayoutOverview devices={devices} /><div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
     </section>
   </main>
