@@ -1,4 +1,13 @@
-export type LayerType = 'clock' | 'video' | 'image' | 'text' | 'ticker'
+export type LayerType = 'clock' | 'video' | 'image' | 'text' | 'ticker' | 'live'
+
+export type LiveSourceKind = 'camera'
+
+export type LiveSource = {
+  id: string
+  name: string
+  kind: LiveSourceKind
+  deviceId?: string
+}
 
 export type SceneLayer = {
   id: string
@@ -20,6 +29,7 @@ export type SceneLayer = {
   sourceHeight?: number
   content: {
     url?: string
+    liveSourceId?: string
     text?: string
     timezone?: string
     fontFamily?: string

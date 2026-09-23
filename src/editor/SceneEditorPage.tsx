@@ -6,6 +6,7 @@ import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLay
 import type { Device, Scene, SceneLayer } from '../types'
 
 export function EditorMedia({ layer, onSize }: { layer: SceneLayer; onSize: (width: number, height: number) => void }) {
+  if (layer.type === 'live') return <div className="media-placeholder">Live input · not connected</div>
   return layer.type === 'image' && layer.content.url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
 }
 
@@ -22,6 +23,7 @@ function layerLabel(layer: SceneLayer): string {
     }
   }
   if (layer.type === 'clock') return layer.content.timezone?.trim() || fallback
+  if (layer.type === 'live') return 'Live input'
   return layer.content.text?.trim().replace(/\s+/g, ' ').slice(0, 48) || fallback
 }
 
@@ -123,13 +125,12 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       {selected ? <>
         <section className="inspector-section" aria-label="Source">
           <h2>Source</h2>
-          <label>Type<select value={selected.type} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option></select></label>
-          <label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label>
-          <label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label>
+          <label>Type<select value={selected.type} disabled={selected.type === 'live'} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option>{selected.type === 'live' && <option value="live">Live input</option>}</select></label>
+          {selected.type === 'live' ? <p>Live source: {selected.content.liveSourceId || 'Not assigned'}. Playback is not available yet.</p> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
         </section>
         <section className="inspector-section" aria-label="Fit and display">
           <h2>Fit / Display</h2>
-          <label>Image fit<select value={selected.content.fit ?? 'cover'} onChange={event => updateLayer(selected.id, { content: { ...selected.content, fit: event.target.value as 'cover' | 'contain' } })}><option value="cover">Fill layer (crop edges)</option><option value="contain">Show whole image</option></select></label>
+          {selected.type !== 'live' && <label>Image fit<select value={selected.content.fit ?? 'cover'} onChange={event => updateLayer(selected.id, { content: { ...selected.content, fit: event.target.value as 'cover' | 'contain' } })}><option value="cover">Fill layer (crop edges)</option><option value="contain">Show whole image</option></select></label>}
           <label><input type="checkbox" checked={selected.lockedAspect !== false} onChange={(event) => updateLayer(selected.id, { lockedAspect: event.target.checked })} /> Lock media aspect ratio</label>
           <button className="secondary" disabled={!activeDevices.length} onClick={() => updateLayer(selected.id, fitLayerToDevices(selected, activeDevices))}>Fit layer to selected screens</button>
         </section>
