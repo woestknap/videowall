@@ -111,6 +111,13 @@
 .canvas-hint { justify-self: stretch; margin: 0; padding: .65rem 1rem; border-top: 1px solid #202a3e; background: #0e1523; }
 .inspector { padding: 1.15rem; gap: .85rem; }
 .inspector > .eyebrow { margin: 0 0 .2rem; padding-bottom: .8rem; border-bottom: 1px solid #28344c; }
+.inspector-section { display: grid; align-content: start; gap: .65rem; min-width: 0; padding-bottom: 1rem; border-bottom: 1px solid #28344c; }
+.inspector-section:last-child { padding-bottom: 0; border-bottom: 0; }
+.inspector-section h2 { margin: 0 0 .1rem; color: #9aa9c6; font-size: .7rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.inspector-section label { min-width: 0; color: #b8c4dc; font-size: .78rem; }
+.inspector-section .upload-button { color: #052218; text-align: center; }
+.inspector-section > button { width: 100%; }
+.inspector .position-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .inspector label:has(> input[type="checkbox"]) { display: flex; align-items: flex-start; gap: .55rem; line-height: 1.35; }
 .inspector input[type="checkbox"] { width: auto; margin: .15rem 0 0; accent-color: #9bf6d2; }
 
