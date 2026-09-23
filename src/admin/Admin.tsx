@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { isConfigured, supabase } from '../lib/supabase'
+import { bounds, deviceRect } from '../lib/wallGeometry'
 import { ScenePreview } from '../rendering/ScenePreview'
 import type { Device, Scene, SceneLayer, Wall } from '../types'
 
@@ -9,6 +10,27 @@ const starterScene: Scene = {
     { id: 'welcome', type: 'text', target: [], x: 8, y: 12, width: 84, height: 40, zIndex: 1, content: { text: 'Videowall is ready' } },
     { id: 'clock', type: 'clock', target: [], x: 8, y: 60, width: 45, height: 24, zIndex: 2, content: { timezone: 'Europe/Amsterdam' } },
   ],
+}
+
+function WallLayoutOverview({ devices }: { devices: Device[] }) {
+  const rectangles = devices.map((device) => {
+    const rect = deviceRect(device)
+    return {
+      device,
+      rect: {
+        x: Number.isFinite(rect.x) ? rect.x : 0,
+        y: Number.isFinite(rect.y) ? rect.y : 0,
+        width: Number.isFinite(rect.width) ? Math.max(1, rect.width) : 1,
+        height: Number.isFinite(rect.height) ? Math.max(1, rect.height) : 1,
+      },
+    }
+  })
+  const wallBounds = bounds(rectangles.map(({ rect }) => rect))
+  return <div className="wall-layout-overview" aria-label="Physical wall layout overview">
+    <div className="wall-layout-canvas" style={{ aspectRatio: `${wallBounds.width} / ${wallBounds.height}` }}>
+      {rectangles.map(({ device, rect }, index) => <div className="wall-layout-screen" key={device.id} title={device.name} style={{ left: `${(rect.x - wallBounds.x) / wallBounds.width * 100}%`, top: `${(rect.y - wallBounds.y) / wallBounds.height * 100}%`, width: `${rect.width / wallBounds.width * 100}%`, height: `${rect.height / wallBounds.height * 100}%` }}><span>{index + 1}</span><strong>{device.name}</strong></div>)}
+    </div>
+  </div>
 }
 
 export function Admin() {
@@ -100,7 +122,7 @@ export function Admin() {
     {notice && <p className="notice">{notice}</p>}
     <section className="dashboard-grid">
       <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} /></article>
-      <article className="panel dashboard-screens-panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div><div className="wall-preview">{devices.length ? devices.map((device, index) => <div className="screen-card" key={device.id}><span>{index + 1}</span><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small><button className="danger" onClick={() => void deleteDevice(device)}>Remove Pi</button></div>) : <p>Pair a Pi to start building your wall.</p>}</div></article>
+      <article className="panel dashboard-screens-panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>{devices.length ? <><WallLayoutOverview devices={devices} /><div className="dashboard-device-list">{devices.map((device, index) => <div className="dashboard-device-row" key={device.id}><span>{index + 1}</span><div><strong>{device.name}</strong><small>{device.last_seen_at ? 'Online recently' : 'Waiting'}</small></div><button className="danger" onClick={() => void deleteDevice(device)}>Remove Pi</button></div>)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
     </section>
   </main>

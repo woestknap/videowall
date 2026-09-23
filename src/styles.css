@@ -158,6 +158,18 @@
 .dashboard-screens-panel .wall-preview { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); align-content: start; min-height: 0; max-height: min(60vh, 560px); overflow-y: auto; padding: 0; background: transparent; }
 .dashboard-screens-panel .screen-card { min-width: 0; }
 .dashboard-screens-panel .screen-card strong { overflow-wrap: anywhere; }
+.wall-layout-overview { display: grid; place-items: center; min-height: 180px; padding: .8rem; border: 1px solid #293752; background: #080c16; overflow: hidden; }
+.wall-layout-canvas { position: relative; width: 100%; background: #0d1422; outline: 1px solid #1e2b42; outline-offset: .35rem; }
+.wall-layout-screen { position: absolute; display: grid; align-content: center; justify-items: center; min-width: 0; min-height: 0; padding: .35rem; border: 2px solid #6d8ad0; background: #17274a; color: #e7edff; overflow: hidden; text-align: center; }
+.wall-layout-screen span { position: absolute; top: .25rem; left: .35rem; color: #9bf6d2; font-size: .62rem; font-weight: 800; }
+.wall-layout-screen strong { max-width: 100%; overflow: hidden; font-size: clamp(.58rem, 1.1vw, .76rem); line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-device-list { display: grid; gap: .35rem; margin-top: .9rem; }
+.dashboard-device-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .55rem; padding: .45rem .5rem; border-top: 1px solid #202a3e; font-size: .75rem; }
+.dashboard-device-row > span { color: #9bf6d2; font-variant-numeric: tabular-nums; }
+.dashboard-device-row > div { display: grid; min-width: 0; gap: .08rem; }
+.dashboard-device-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-device-row small { color: #9da7bd; }
+.dashboard-device-row button { padding: .35rem .5rem; font-size: .7rem; }
 .scenes .scene-row { display: grid; grid-template-columns: minmax(160px, 2fr) minmax(110px, 1fr) auto auto auto; gap: .75rem; }
 .scenes .scene-select { justify-self: start; text-align: left; }
 
@@ -170,6 +182,7 @@
   .dashboard-toolbar { align-items: stretch; }
   .dashboard-wall-picker { flex: 1 1 100%; }
   .dashboard-wall-actions { margin-left: 0; }
+  .wall-layout-overview { min-height: 160px; }
   .scenes .scene-row { display: flex; flex-wrap: wrap; }
   .scenes .scene-row small { flex: 1 1 100px; }
 }
