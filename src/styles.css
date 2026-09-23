@@ -76,3 +76,52 @@
 .editor-toolbar .target-picker > span { color: #8d99b7; font-size: .7rem; font-weight: 800; letter-spacing: .08em; }
 .editor-toolbar .target-picker label { display: flex; align-items: center; gap: .4rem; }
 .editor-toolbar .target-picker input { width: auto; margin: 0; }
+
+/* UI-01: editor shell and workspace hierarchy. Canvas transforms stay on .editor-stage. */
+.editor-header { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 1rem; }
+.editor-header > a { justify-self: start; font-size: .82rem; }
+.editor-header .editor-actions { justify-self: end; text-align: right; }
+.editor-layout { height: calc(100dvh - 68px); min-height: 600px; grid-template-columns: clamp(228px, 18vw, 272px) minmax(0, 1fr) clamp(264px, 21vw, 304px); }
+.editor-toolbar, .inspector { min-height: 0; overflow-y: auto; scrollbar-color: #34425c #101626; }
+.editor-toolbar { display: grid; align-content: start; gap: 0; padding: 0 1rem; }
+.editor-sidebar-group { display: grid; align-content: start; gap: .7rem; padding: 1.15rem 0 1.25rem; border-bottom: 1px solid #28344c; }
+.editor-sidebar-group:last-child { border-bottom: 0; }
+.editor-sidebar-group > .eyebrow, .editor-sidebar-heading .eyebrow { margin: 0; }
+.editor-sidebar-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.editor-sidebar-heading span { flex: none; color: #8492b0; font-size: .7rem; font-variant-numeric: tabular-nums; }
+.editor-toolbar .screen-list { gap: .5rem; padding: 0; border: 0; }
+.editor-toolbar small { margin: 0; }
+.editor-toolbar .notice { margin: 0; padding: .7rem; font-size: .75rem; }
+.editor-add-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.editor-add-actions button { min-width: 0; padding: .6rem .55rem; font-size: .8rem; }
+.editor-toolbar .editor-layer-settings .wall-layer-controls { border-top: 0; padding: 0; }
+.editor-stage-wrap { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; justify-items: center; align-items: center; min-height: 0; padding: 0; background: #090e19; }
+.canvas-controls { position: relative; inset: auto; justify-self: stretch; width: 100%; min-height: 54px; margin: 0; padding: .65rem 1rem; border: 0; border-bottom: 1px solid #202a3e; border-radius: 0; background: #0e1523; }
+.canvas-controls::before { content: 'WALL WORKSPACE'; margin-right: auto; color: #9aa9c6; font-size: .7rem; font-weight: 800; letter-spacing: .12em; }
+.canvas-controls span { min-width: 3rem; text-align: center; font-variant-numeric: tabular-nums; }
+.editor-stage-wrap > .editor-stage { justify-self: center; align-self: center; width: calc(100% - 2.5rem); max-width: 1280px; }
+.canvas-hint { justify-self: stretch; margin: 0; padding: .65rem 1rem; border-top: 1px solid #202a3e; background: #0e1523; }
+.inspector { padding: 1.15rem; gap: .85rem; }
+.inspector > .eyebrow { margin: 0 0 .2rem; padding-bottom: .8rem; border-bottom: 1px solid #28344c; }
+.inspector label:has(> input[type="checkbox"]) { display: flex; align-items: flex-start; gap: .55rem; line-height: 1.35; }
+.inspector input[type="checkbox"] { width: auto; margin: .15rem 0 0; accent-color: #9bf6d2; }
+
+@media (max-width: 900px) {
+  .editor-layout { height: auto; min-height: calc(100dvh - 68px); grid-template-columns: minmax(0, 1fr); }
+  .editor-toolbar, .inspector { overflow: visible; }
+  .editor-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 1.5rem; padding: 0 1rem; }
+  .editor-layer-settings { grid-column: 1 / -1; }
+  .editor-toolbar small, .editor-toolbar .eyebrow { display: block; }
+  .editor-stage-wrap { min-height: 56vw; }
+  .editor-toolbar button { text-align: left; padding-inline: .55rem; }
+}
+@media (max-width: 620px) {
+  .editor-header { grid-template-columns: 1fr 1fr; }
+  .editor-header > div { text-align: right; }
+  .editor-header input { max-width: 100%; text-align: right; }
+  .editor-header .editor-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  .editor-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .editor-layer-settings { grid-column: auto; }
+  .canvas-controls { flex-wrap: wrap; }
+  .canvas-controls::before { width: 100%; }
+}
