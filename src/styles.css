@@ -94,6 +94,14 @@
 .editor-toolbar .notice { margin: 0; padding: .7rem; font-size: .75rem; }
 .editor-add-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
 .editor-add-actions button { min-width: 0; padding: .6rem .55rem; font-size: .8rem; }
+.editor-layer-list { display: grid; gap: .3rem; min-width: 0; }
+.editor-toolbar .editor-layer-row { display: flex; align-items: center; gap: .55rem; width: 100%; min-width: 0; padding: .5rem .55rem; border: 1px solid transparent; border-radius: 5px; background: #151d2e; color: #e9ecf5; font-size: .76rem; font-weight: 500; }
+.editor-toolbar .editor-layer-row:hover { background: #202d43; }
+.editor-toolbar .editor-layer-row.is-selected { border-color: #68b698; background: #19372f; color: #eafff5; }
+.editor-toolbar .editor-layer-row:focus-visible { outline: 2px solid #9bf6d2; outline-offset: 2px; }
+.editor-layer-type { flex: none; min-width: 3.35rem; color: #9aa9c6; font-size: .65rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.editor-layer-row.is-selected .editor-layer-type { color: #9bf6d2; }
+.editor-layer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-toolbar .editor-layer-settings .wall-layer-controls { border-top: 0; padding: 0; }
 .editor-stage-wrap { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; justify-items: center; align-items: center; min-height: 0; padding: 0; background: #090e19; }
 .canvas-controls { position: relative; inset: auto; justify-self: stretch; width: 100%; min-height: 54px; margin: 0; padding: .65rem 1rem; border: 0; border-bottom: 1px solid #202a3e; border-radius: 0; background: #0e1523; }

@@ -9,6 +9,22 @@ export function EditorMedia({ layer, onSize }: { layer: SceneLayer; onSize: (wid
   return layer.type === 'image' && layer.content.url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
 }
 
+function layerLabel(layer: SceneLayer): string {
+  const fallback = `${layer.type[0].toUpperCase()}${layer.type.slice(1)} layer`
+  if (layer.type === 'image' || layer.type === 'video') {
+    if (!layer.content.url?.trim()) return fallback
+    try {
+      const pathname = new URL(layer.content.url, window.location.href).pathname
+      const filename = decodeURIComponent(pathname.split('/').pop() ?? '').replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, '')
+      return filename || fallback
+    } catch {
+      return fallback
+    }
+  }
+  if (layer.type === 'clock') return layer.content.timezone?.trim() || fallback
+  return layer.content.text?.trim().replace(/\s+/g, ' ').slice(0, 48) || fallback
+}
+
 export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [scene, setScene] = useState<Scene | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
@@ -56,6 +72,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const currentScene = { ...scene, layers: scene.layers.map(layer => toWorkspaceLayer(layer, scene, devices)) }
   const activeDevices = sceneDevices(currentScene, devices)
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
+  const layersByStack = currentScene.layers.map((layer, index) => ({ layer, index })).sort((a, b) => b.layer.zIndex - a.layer.zIndex || a.index - b.index)
   const isSceneDevice = (deviceId: string) => !currentScene.device_ids?.length || currentScene.device_ids.includes(deviceId)
   function updateLayer(id: string, change: Partial<SceneLayer>) { setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) }) }
   function updateContent(key: 'text' | 'url' | 'timezone' | 'fontFamily', value: string) { if (selected) updateLayer(selected.id, { content: { ...selected.content, [key]: value } }) }
@@ -91,6 +108,12 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       <section className="editor-sidebar-group">
         <p className="eyebrow">ADD MEDIA</p>
         <div className="editor-add-actions"><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button></div>
+      </section>
+      <section className="editor-sidebar-group">
+        <div className="editor-sidebar-heading"><p className="eyebrow">LAYERS</p><span>{currentScene.layers.length}</span></div>
+        <div className="editor-layer-list">
+          {layersByStack.length ? layersByStack.map(({ layer }) => <button key={layer.id} type="button" className={`editor-layer-row ${layer.id === selectedId ? 'is-selected' : ''}`} aria-pressed={layer.id === selectedId} onClick={() => setSelectedId(layer.id)} title={layerLabel(layer)}><span className="editor-layer-type">{layer.type}</span><span className="editor-layer-name">{layerLabel(layer)}</span></button>) : <small>No layers yet. Add an image or video above.</small>}
+        </div>
       </section>
       {selected && <section className="editor-sidebar-group editor-layer-settings"><p className="eyebrow">LAYER DISPLAY</p><div className="wall-layer-controls"><label>Layer canvas<select value={selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}><option value="screen">One copy on each selected display</option><option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span>{devices.map((item) => <label key={item.id} className={!isSceneDevice(item.id) ? 'disabled-target' : ''}><input type="checkbox" disabled={!isSceneDevice(item.id)} checked={isSceneDevice(item.id) && (!selected.target.length || selected.target.includes(item.id))} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div></div></section>}
     </aside>
