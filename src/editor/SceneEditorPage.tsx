@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react'
 import { ScreenLayoutControls } from '../ScreenLayoutControls'
-import { panForCursorZoom } from '../lib/editorZoom'
+import { fitEditorView, panForCursorZoom } from '../lib/editorZoom'
 import { supabase } from '../lib/supabase'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, layerReference, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
@@ -19,6 +19,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [layoutDirty, setLayoutDirty] = useState(false)
   const [devicesLoaded, setDevicesLoaded] = useState(false)
   const stageRef = useRef<HTMLDivElement>(null)
+  const initialFitSceneRef = useRef<string | null>(null)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null)
@@ -26,6 +27,31 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => { if (error) { setNotice(error.message); return }; setDevices(data ?? []); setDevicesLoaded(true) }) }, [])
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
+  useEffect(() => {
+    if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
+    const workspace = stageRef.current?.parentElement
+    const active = sceneDevices(scene, devices)
+    if (!workspace || !active.length) {
+      if (!active.length) initialFitSceneRef.current = scene.id
+      return
+    }
+    const fitInitialView = () => {
+      const stage = stageRef.current
+      if (!stage) return
+      const controls = workspace.querySelector<HTMLElement>('.canvas-controls')
+      const hint = workspace.querySelector<HTMLElement>('.canvas-hint')
+      const view = fitEditorView({ bounds: bounds(active.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } })
+      if (!view) return
+      setZoom(view.zoom)
+      setPan(view.pan)
+      initialFitSceneRef.current = scene.id
+      observer.disconnect()
+    }
+    const observer = new ResizeObserver(fitInitialView)
+    observer.observe(workspace)
+    fitInitialView()
+    return () => observer.disconnect()
+  }, [scene, devices, devicesLoaded])
   if (!scene || !devicesLoaded) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
   const currentScene = { ...scene, layers: scene.layers.map(layer => toWorkspaceLayer(layer, scene, devices)) }
   const activeDevices = sceneDevices(currentScene, devices)
@@ -49,7 +75,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   function startPan(event: PointerEvent<HTMLDivElement>) { if (event.button !== 1 && !spaceHeld) return; setPanDrag({ x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault() }
   function movePan(event: PointerEvent<HTMLDivElement>) { if (panDrag) setPan({ x: panDrag.panX + event.clientX - panDrag.x, y: panDrag.panY + event.clientY - panDrag.y }) }
   function zoomCanvas(event: WheelEvent<HTMLElement>) { event.preventDefault(); const nextZoom = Math.max(.2, Math.min(128, Number((zoom * (event.deltaY < 0 ? 1.18 : .85)).toFixed(3)))), stage = stageRef.current; if (stage && nextZoom !== zoom) setPan(current => panForCursorZoom({ pan: current, zoom, nextZoom, stage: stage.getBoundingClientRect(), cursor: { x: event.clientX, y: event.clientY } })); setZoom(nextZoom) }
-  function fitScreens() { const stage = stageRef.current; if (!stage || !activeDevices.length) return; const box = bounds(activeDevices.map(deviceRect)), nextZoom = Math.max(.2, Math.min(128, .8 * Math.min(WALL_WORKSPACE_WIDTH / box.width, WALL_WORKSPACE_HEIGHT / box.height))); setZoom(nextZoom); setPan({ x: (0.5 - (box.x + box.width / 2) / WALL_WORKSPACE_WIDTH) * stage.clientWidth * nextZoom, y: (0.5 - (box.y + box.height / 2) / WALL_WORKSPACE_HEIGHT) * stage.clientHeight * nextZoom }) }
+  function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || !activeDevices.length) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const view = fitEditorView({ bounds: bounds(activeDevices.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } }); if (!view) return; setZoom(view.zoom); setPan(view.pan) }
   function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) { if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return; const layer = currentScene.layers.find((item) => item.id === layerId); if (!layer || (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight)) return; const target = devices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))), screenSpace = (layer.space ?? 'screen') === 'screen', referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH, referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT; updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 }) }
   function updateDimension(key: 'width' | 'height', value: number) { if (!selected) return; const change: Partial<SceneLayer> = { [key]: value }; if (selected.lockedAspect && selected.aspectRatio) { const target = activeDevices.find(item => !selected.target.length || selected.target.includes(item.id)), reference = layerReference(selected, currentScene, devices, target); if (key === 'width') change.height = value * (reference.width / reference.height) / selected.aspectRatio; else change.width = value * selected.aspectRatio / (reference.width / reference.height) }; updateLayer(selected.id, change) }
   const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
