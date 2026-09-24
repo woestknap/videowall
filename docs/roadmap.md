@@ -32,7 +32,8 @@ These are planned tasks, not claims that future behavior already exists. Each it
 
 ## Phase 5 — WebRTC proof of concept (planned)
 
-- **LIVE-05:** Send one editor webcam stream to one paired Pi. Acceptance: a single Pi receives live video via WebRTC; signalling options, including Supabase Realtime/Broadcast, are evaluated; normal state polling carries no video frames. Keep this isolated from full scene integration.
+- **LIVE-05A:** Add authorized signalling and live-session discovery. Acceptance: the signed-in editor and one token-authenticated paired Pi can join only their short-lived, device-scoped session; discovery uses the existing player poll, realtime messages are isolated and ephemeral, and no video frames enter Supabase or normal state polling.
+- **LIVE-05B:** Send one editor webcam stream to one paired Pi. Acceptance: a single Pi receives live video through one WebRTC peer connection using the LIVE-05A signalling path; the proof remains isolated from full scene integration and records codec/resolution behavior on target Pi hardware.
 
 ## Phase 6 — Live wall integration (planned)
 
