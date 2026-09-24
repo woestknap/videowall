@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false",
-    "signaling": "node server/signaling/index.js",
+    "signaling": "node --env-file-if-exists=.env server/signaling/index.js",
     "test:signaling": "node --test tests/signaling.test.mjs",
     "test:geometry": "node --test tests/wallGeometry.test.mjs",
     "preview": "vite preview"

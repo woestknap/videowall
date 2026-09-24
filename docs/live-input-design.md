@@ -158,3 +158,11 @@ The proof of concept should be split so security and transport are independently
 2. **LIVE-05B — one-editor/one-Pi WebRTC:** connect the existing editor camera stream to one paired Pi with `offer`, `answer` and trickle ICE; render it in an isolated player proof-of-concept surface and record Pi codec/resolution results.
 
 Full layer rendering, multiple Pi peers and broader error recovery remain LIVE-07, LIVE-06 and LIVE-08 respectively.
+
+## LIVE-05A development smoke test
+
+Use Node 24. Copy `.env.example` to `.env`. Browser values are `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_SIGNALING_URL`; the signaling process additionally requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SIGNALING_PORT`, `PUBLIC_SIGNALING_URL` and `SIGNALING_ALLOWED_ORIGINS`. The service-role key is server-only. `ws://localhost:8787` is valid only for local development; deploy behind TLS and use `wss://` in production.
+
+Apply the migration to a linked development project with `npx supabase db push`, then run `npm run dev` and, in a second terminal, `npm run signaling`. Sign in to the editor, save a live layer that targets one paired display, choose that display and select **Start live session**. The editor progresses from **Signaling connecting** to **Waiting for player**. Within the player's normal four-second poll, the target Pi discovers its lease, authenticates, sends `peer-ready`, and the editor shows **Player connected**. `?player=1&debug=1` shows the player's signaling state without changing playback.
+
+Select **End session** in the editor to remove the lease and close the socket; both sides report an ended/idle state on their next event or poll. Stop the signaling service to verify that the player continues its normal scene polling and rendering despite a signaling error. This smoke test proves authentication and cleanup only: it does not send camera media or create a WebRTC connection.
