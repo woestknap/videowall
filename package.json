@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false",
+    "signaling": "node server/signaling/index.js",
+    "test:signaling": "node --test tests/signaling.test.mjs",
     "test:geometry": "node --test tests/wallGeometry.test.mjs",
     "preview": "vite preview"
   },
@@ -17,7 +19,8 @@
     "@fontsource/space-grotesk": "^5.3.0",
     "@supabase/supabase-js": "^2.57.4",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/react": "^19.1.12",

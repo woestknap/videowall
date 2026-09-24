@@ -4,6 +4,7 @@ import { fitEditorView, panForCursorZoom } from '../lib/editorZoom'
 import { supabase } from '../lib/supabase'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, layerReference, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
+import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage } from '../signalingProtocol'
 
 function LiveCameraPreview({ stream }: { stream: MediaStream }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -60,10 +61,15 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [cameraLayerId, setCameraLayerId] = useState<string | null>(null)
   const [cameraError, setCameraError] = useState('')
   const cameraStreamRef = useRef<MediaStream | null>(null)
+  const [liveTargetDeviceId, setLiveTargetDeviceId] = useState('')
+  const [signalingStatus, setSignalingStatus] = useState('Session not started')
+  const [signalingScope, setSignalingScope] = useState<AuthenticatedMessage | null>(null)
+  const signalingSocketRef = useRef<WebSocket | null>(null)
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => { if (error) { setNotice(error.message); return }; setDevices(data ?? []); setDevicesLoaded(true) }) }, [])
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
   useEffect(() => () => { cameraStreamRef.current?.getTracks().forEach(track => track.stop()) }, [])
+  useEffect(() => () => { signalingSocketRef.current?.close(1000, 'editor-unmounted') }, [])
   useEffect(() => {
     if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
     const workspace = stageRef.current?.parentElement
@@ -113,6 +119,44 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     cameraStreamRef.current = null
     setCameraStream(null)
     setCameraLayerId(null)
+  }
+  function stopLiveSession() {
+    const socket = signalingSocketRef.current
+    if (socket && signalingScope && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(signalingScope, 'session-ended', { reason: 'controller-stopped' })))
+    socket?.close(1000, 'controller-stopped')
+    signalingSocketRef.current = null
+    setSignalingScope(null)
+    setSignalingStatus('Session ended')
+  }
+  async function startLiveSession() {
+    if (!supabase || !selected || selected.type !== 'live' || !selected.content.liveSourceId) return
+    const targetId = liveTargetDeviceId || activeDevices.find(device => !selected.target.length || selected.target.includes(device.id))?.id
+    const target = activeDevices.find(device => device.id === targetId && (!selected.target.length || selected.target.includes(device.id)))
+    const signalingUrl = import.meta.env.VITE_SIGNALING_URL
+    if (!target) return setSignalingStatus('Choose a target player')
+    if (!signalingUrl) return setSignalingStatus('Signaling URL is not configured')
+    const { data, error } = await supabase.auth.getSession()
+    if (error || !data.session?.access_token) return setSignalingStatus('Sign in again to start signaling')
+    stopLiveSession()
+    setSignalingStatus('Signaling connecting')
+    let socket: WebSocket
+    try { socket = new WebSocket(signalingUrl) } catch { setSignalingStatus('Signaling error'); return }
+    signalingSocketRef.current = socket
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'editor', accessToken: data.session!.access_token, wallId: target.wall_id, targetDeviceId: target.id, liveSourceId: selected.content.liveSourceId })))
+    socket.addEventListener('message', (event) => {
+      if (typeof event.data !== 'string') return
+      const message = parseServerSignalingMessage(event.data)
+      if (!message) return setSignalingStatus('Signaling error')
+      if (message.type === 'authenticated' && message.role === 'editor') { setSignalingScope(message); setSignalingStatus('Waiting for player') }
+      else if (message.type === 'peer-ready') setSignalingStatus('Player connected')
+      else if (message.type === 'session-ended') {
+        if (message.payload.reason === 'player-left') setSignalingStatus('Waiting for player')
+        else { setSignalingScope(null); setSignalingStatus('Session ended') }
+      }
+      else if (message.type === 'error') setSignalingStatus('Signaling error')
+    })
+    socket.addEventListener('error', () => setSignalingStatus('Signaling error'))
+    socket.addEventListener('close', () => { if (signalingSocketRef.current === socket) { signalingSocketRef.current = null; setSignalingScope(null); setSignalingStatus(current => current === 'Session ended' ? current : 'Session ended') } })
   }
   async function startCamera(requestedCameraId = selectedCameraId) {
     if (!selected || selected.type !== 'live') return
@@ -184,7 +228,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
         <section className="inspector-section" aria-label="Source">
           <h2>Source</h2>
           <label>Type<select value={selected.type} disabled={selected.type === 'live'} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option>{selected.type === 'live' && <option value="live">Live input</option>}</select></label>
-          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
+          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><label>Target player<select value={liveTargetDeviceId || activeDevices.find(device => !selected.target.length || selected.target.includes(device.id))?.id || ''} onChange={event => setLiveTargetDeviceId(event.target.value)}>{activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)).map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label><button onClick={() => void startLiveSession()}>Start live session</button>{signalingScope && <button className="secondary" onClick={stopLiveSession}>End session</button>}</div><p className="live-camera-message">{signalingStatus}</p></> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
         </section>
         <section className="inspector-section" aria-label="Fit and display">
           <h2>Fit / Display</h2>
