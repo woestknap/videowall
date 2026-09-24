@@ -5,8 +5,20 @@ import { supabase } from '../lib/supabase'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, layerReference, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
 
-export function EditorMedia({ layer, onSize }: { layer: SceneLayer; onSize: (width: number, height: number) => void }) {
-  if (layer.type === 'live') return <div className="media-placeholder">Live input · not connected</div>
+function LiveCameraPreview({ stream }: { stream: MediaStream }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    video.srcObject = stream
+    void video.play().catch(() => undefined)
+    return () => { if (video.srcObject === stream) video.srcObject = null }
+  }, [stream])
+  return <video ref={videoRef} className="editor-video" autoPlay muted playsInline />
+}
+
+export function EditorMedia({ layer, onSize, liveStream, liveLayerId }: { layer: SceneLayer; onSize: (width: number, height: number) => void; liveStream?: MediaStream | null; liveLayerId?: string | null }) {
+  if (layer.type === 'live') return liveStream && liveLayerId === layer.id ? <LiveCameraPreview stream={liveStream} /> : <div className="media-placeholder">Live input · preview disabled</div>
   return layer.type === 'image' && layer.content.url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
 }
 
@@ -42,9 +54,16 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null)
   const [spaceHeld, setSpaceHeld] = useState(false)
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([])
+  const [selectedCameraId, setSelectedCameraId] = useState('')
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null)
+  const [cameraLayerId, setCameraLayerId] = useState<string | null>(null)
+  const [cameraError, setCameraError] = useState('')
+  const cameraStreamRef = useRef<MediaStream | null>(null)
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => { if (error) { setNotice(error.message); return }; setDevices(data ?? []); setDevicesLoaded(true) }) }, [])
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
+  useEffect(() => () => { cameraStreamRef.current?.getTracks().forEach(track => track.stop()) }, [])
   useEffect(() => {
     if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
     const workspace = stageRef.current?.parentElement
@@ -76,10 +95,49 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
   const layersByStack = currentScene.layers.map((layer, index) => ({ layer, index })).sort((a, b) => b.layer.zIndex - a.layer.zIndex || a.index - b.index)
   const isSceneDevice = (deviceId: string) => !currentScene.device_ids?.length || currentScene.device_ids.includes(deviceId)
+  async function listCameras() {
+    if (!navigator.mediaDevices?.enumerateDevices) { setCameraError('Camera devices are unavailable in this browser.'); return [] }
+    try {
+      const cameras = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput')
+      setCameraDevices(cameras)
+      setSelectedCameraId(current => cameras.some(device => device.deviceId === current) ? current : cameras[0]?.deviceId ?? '')
+      setCameraError(cameras.length ? '' : 'No video inputs found.')
+      return cameras
+    } catch {
+      setCameraError('Camera devices could not be listed.')
+      return []
+    }
+  }
+  function stopCamera() {
+    cameraStreamRef.current?.getTracks().forEach(track => track.stop())
+    cameraStreamRef.current = null
+    setCameraStream(null)
+    setCameraLayerId(null)
+  }
+  async function startCamera(requestedCameraId = selectedCameraId) {
+    if (!selected || selected.type !== 'live') return
+    const cameras = await listCameras()
+    const cameraId = cameras.some(device => device.deviceId === requestedCameraId) ? requestedCameraId : cameras[0]?.deviceId
+    if (!cameraId || !navigator.mediaDevices?.getUserMedia) { if (!cameraId) setCameraError('No video inputs found.'); else setCameraError('Camera preview is unavailable in this browser.'); return }
+    setSelectedCameraId(cameraId)
+    stopCamera()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: cameraId } }, audio: false })
+      cameraStreamRef.current = stream
+      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamRef.current === stream) { cameraStreamRef.current = null; setCameraStream(null); setCameraLayerId(null); setCameraError('Camera is no longer available.'); void listCameras() } } })
+      setCameraStream(stream)
+      setCameraLayerId(selected.id)
+      setCameraError('')
+      void listCameras()
+    } catch (error) {
+      const name = error instanceof Error ? error.name : ''
+      setCameraError(name === 'NotAllowedError' ? 'Camera permission was denied.' : name === 'NotFoundError' || name === 'OverconstrainedError' ? 'The selected camera is unavailable.' : 'Camera preview could not be started.')
+    }
+  }
   function updateLayer(id: string, change: Partial<SceneLayer>) { setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) }) }
   function updateContent(key: 'text' | 'url' | 'timezone' | 'fontFamily', value: string) { if (selected) updateLayer(selected.id, { content: { ...selected.content, [key]: value } }) }
-  function addLayer(type: 'image' | 'video') { const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], space: 'wall', coordinateSpace: 'freeform', x: 10, y: 10, width: 45, height: 45, zIndex: currentScene.layers.length + 1, scale: 1, rotation: 0, lockedAspect: true, aspectRatio: 16 / 9, content: { url: '' } }; setScene({ ...currentScene, layers: [...currentScene.layers, layer] }); setSelectedId(layer.id) }
-  function removeSelected() { if (!selected) return; setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
+  function addLayer(type: 'image' | 'video' | 'live') { const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], space: 'wall', coordinateSpace: 'freeform', x: 10, y: 10, width: 45, height: 45, zIndex: currentScene.layers.length + 1, scale: 1, rotation: 0, lockedAspect: true, aspectRatio: 16 / 9, content: type === 'live' ? { liveSourceId: crypto.randomUUID() } : { url: '' } }; setScene({ ...currentScene, layers: [...currentScene.layers, layer] }); setSelectedId(layer.id) }
+  function removeSelected() { if (!selected) return; if (cameraLayerId === selected.id) stopCamera(); setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
   function moveLayer(direction: 'up' | 'down') { if (!selected) return; updateLayer(selected.id, { zIndex: Math.max(1, selected.zIndex + (direction === 'up' ? 1 : -1)) }) }
   function toggleTarget(deviceId: string) { if (!selected) return; const target = !selected.target.length ? devices.filter((item) => item.id !== deviceId).map((item) => item.id) : selected.target.includes(deviceId) ? selected.target.filter((id) => id !== deviceId) : [...selected.target, deviceId]; updateLayer(selected.id, { target }) }
   function toggleSceneDevice(deviceId: string) { const current = currentScene.device_ids ?? []; const next = !current.length ? devices.filter((item) => item.id !== deviceId).map((item) => item.id) : current.includes(deviceId) ? current.filter((id) => id !== deviceId) : [...current, deviceId]; setScene({ ...currentScene, device_ids: next.length === devices.length ? [] : next }) }
@@ -97,7 +155,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || !activeDevices.length) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const view = fitEditorView({ bounds: bounds(activeDevices.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } }); if (!view) return; setZoom(view.zoom); setPan(view.pan) }
   function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) { if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return; const layer = currentScene.layers.find((item) => item.id === layerId); if (!layer || (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight)) return; const target = devices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))), screenSpace = (layer.space ?? 'screen') === 'screen', referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH, referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT; updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 }) }
   function updateDimension(key: 'width' | 'height', value: number) { if (!selected) return; const change: Partial<SceneLayer> = { [key]: value }; if (selected.lockedAspect && selected.aspectRatio) { const target = activeDevices.find(item => !selected.target.length || selected.target.includes(item.id)), reference = layerReference(selected, currentScene, devices, target); if (key === 'width') change.height = value * (reference.width / reference.height) / selected.aspectRatio; else change.width = value * selected.aspectRatio / (reference.width / reference.height) }; updateLayer(selected.id, change) }
-  const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
+  const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} liveStream={cameraStream} liveLayerId={cameraLayerId} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
   const rectStyle = (item: Device) => ({ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%` })
   return <main className="editor-page"><header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><div className="editor-actions"><button className="secondary" disabled={!layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header><div className="editor-layout">
     <aside className="editor-toolbar">
@@ -109,7 +167,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       </section>
       <section className="editor-sidebar-group">
         <p className="eyebrow">ADD MEDIA</p>
-        <div className="editor-add-actions"><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button></div>
+        <div className="editor-add-actions"><button onClick={() => addLayer('image')}>▣ Image</button><button onClick={() => addLayer('video')}>▶ Video</button><button onClick={() => addLayer('live')}>● Live input</button></div>
       </section>
       <section className="editor-sidebar-group">
         <div className="editor-sidebar-heading"><p className="eyebrow">LAYERS</p><span>{currentScene.layers.length}</span></div>
@@ -126,7 +184,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
         <section className="inspector-section" aria-label="Source">
           <h2>Source</h2>
           <label>Type<select value={selected.type} disabled={selected.type === 'live'} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option>{selected.type === 'live' && <option value="live">Live input</option>}</select></label>
-          {selected.type === 'live' ? <p>Live source: {selected.content.liveSourceId || 'Not assigned'}. Playback is not available yet.</p> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
+          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
         </section>
         <section className="inspector-section" aria-label="Fit and display">
           <h2>Fit / Display</h2>

@@ -92,7 +92,7 @@
 .editor-toolbar .screen-list { gap: .5rem; padding: 0; border: 0; }
 .editor-toolbar small { margin: 0; }
 .editor-toolbar .notice { margin: 0; padding: .7rem; font-size: .75rem; }
-.editor-add-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.editor-add-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
 .editor-add-actions button { min-width: 0; padding: .6rem .55rem; font-size: .8rem; }
 .editor-layer-list { display: grid; gap: .3rem; min-width: 0; }
 .editor-toolbar .editor-layer-row { display: flex; align-items: center; gap: .55rem; width: 100%; min-width: 0; padding: .5rem .55rem; border: 1px solid transparent; border-radius: 5px; background: #151d2e; color: #e9ecf5; font-size: .76rem; font-weight: 500; }
@@ -117,6 +117,10 @@
 .inspector-section label { min-width: 0; color: #b8c4dc; font-size: .78rem; }
 .inspector-section .upload-button { color: #052218; text-align: center; }
 .inspector-section > button { width: 100%; }
+.live-camera-controls { display: grid; gap: .5rem; }
+.live-camera-controls button { width: 100%; }
+.live-camera-controls label { display: grid; gap: .35rem; }
+.live-camera-message { margin: 0; color: #f0cf9a; font-size: .75rem; line-height: 1.4; }
 .inspector .position-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .inspector label:has(> input[type="checkbox"]) { display: flex; align-items: flex-start; gap: .55rem; line-height: 1.35; }
 .inspector input[type="checkbox"] { width: auto; margin: .15rem 0 0; accent-color: #9bf6d2; }
