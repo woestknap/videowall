@@ -62,6 +62,14 @@ export type SignalingErrorMessage = { version: 1; type: 'error'; code: string; m
 export type ClientSignalingMessage = EditorAuthMessage | PlayerAuthMessage | PeerReadyMessage | OfferMessage | AnswerMessage | IceCandidateMessage | SessionEndedMessage
 export type ServerSignalingMessage = AuthenticatedMessage | PeerReadyMessage | OfferMessage | AnswerMessage | IceCandidateMessage | SessionEndedMessage | SignalingErrorMessage
 
+type ScopedClientMessages = {
+  'peer-ready': PeerReadyMessage
+  offer: OfferMessage
+  answer: AnswerMessage
+  'ice-candidate': IceCandidateMessage
+  'session-ended': SessionEndedMessage
+}
+
 export function parseServerSignalingMessage(value: string): ServerSignalingMessage | null {
   try {
     const message: unknown = JSON.parse(value)
@@ -75,6 +83,6 @@ export function parseServerSignalingMessage(value: string): ServerSignalingMessa
   }
 }
 
-export function scopedClientMessage<T extends PeerReadyMessage['type'] | SessionEndedMessage['type']>(scope: AuthenticatedMessage, type: T, payload: T extends 'peer-ready' ? Record<string, never> : { reason: SignalingEndReason }): PeerReadyMessage | SessionEndedMessage {
-  return { version: SIGNALING_VERSION, type, sessionId: scope.sessionId, liveSourceId: scope.liveSourceId, targetDeviceId: scope.targetDeviceId, generation: scope.generation, payload } as PeerReadyMessage | SessionEndedMessage
+export function scopedClientMessage<T extends keyof ScopedClientMessages>(scope: AuthenticatedMessage, type: T, payload: ScopedClientMessages[T]['payload']): ScopedClientMessages[T] {
+  return { version: SIGNALING_VERSION, type, sessionId: scope.sessionId, liveSourceId: scope.liveSourceId, targetDeviceId: scope.targetDeviceId, generation: scope.generation, payload } as ScopedClientMessages[T]
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, typ
 import { ScreenLayoutControls } from '../ScreenLayoutControls'
 import { fitEditorView, panForCursorZoom } from '../lib/editorZoom'
 import { supabase } from '../lib/supabase'
+import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, layerReference, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage } from '../signalingProtocol'
@@ -65,11 +66,14 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [signalingStatus, setSignalingStatus] = useState('Session not started')
   const [signalingScope, setSignalingScope] = useState<AuthenticatedMessage | null>(null)
   const signalingSocketRef = useRef<WebSocket | null>(null)
+  const signalingScopeRef = useRef<AuthenticatedMessage | null>(null)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const pendingIceCandidatesRef = useRef<PendingIceCandidate[]>([])
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => { if (error) { setNotice(error.message); return }; setDevices(data ?? []); setDevicesLoaded(true) }) }, [])
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
   useEffect(() => () => { cameraStreamRef.current?.getTracks().forEach(track => track.stop()) }, [])
-  useEffect(() => () => { signalingSocketRef.current?.close(1000, 'editor-unmounted') }, [])
+  useEffect(() => () => { closeEditorPeerConnection(); signalingSocketRef.current?.close(1000, 'editor-unmounted') }, [])
   useEffect(() => {
     if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
     const workspace = stageRef.current?.parentElement
@@ -119,12 +123,58 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     cameraStreamRef.current = null
     setCameraStream(null)
     setCameraLayerId(null)
+    closeEditorPeerConnection()
+    if (signalingScopeRef.current) stopLiveSession()
+  }
+  function closeEditorPeerConnection() {
+    const peer = peerConnectionRef.current
+    peerConnectionRef.current = null
+    pendingIceCandidatesRef.current.splice(0)
+    if (!peer) return
+    peer.onicecandidate = null
+    peer.onconnectionstatechange = null
+    peer.close()
+  }
+  function sendWebRtcMessage<T extends 'offer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'offer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) {
+    const socket = signalingSocketRef.current
+    if (socket?.readyState !== WebSocket.OPEN || signalingScopeRef.current?.sessionId !== scope.sessionId) throw new Error('Signaling session is unavailable')
+    socket.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
+  }
+  async function startEditorPeerConnection(scope: AuthenticatedMessage) {
+    const stream = cameraStreamRef.current
+    const videoTracks = stream?.getVideoTracks().filter(track => track.readyState === 'live') ?? []
+    if (!stream || !videoTracks.length) { setSignalingStatus('Enable camera preview first'); return }
+    closeEditorPeerConnection()
+    setSignalingStatus('Negotiating WebRTC')
+    const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS))
+    peerConnectionRef.current = peer
+    peer.onicecandidate = event => {
+      try {
+        sendWebRtcMessage(scope, 'ice-candidate', event.candidate ? { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex } : { candidate: null, sdpMid: null, sdpMLineIndex: null })
+      } catch { setSignalingStatus('Signaling error') }
+    }
+    peer.onconnectionstatechange = () => {
+      if (peer !== peerConnectionRef.current) return
+      if (peer.connectionState === 'connected') setSignalingStatus('WebRTC connected')
+      else if (peer.connectionState === 'connecting') setSignalingStatus('WebRTC connecting')
+      else if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') { setSignalingStatus('WebRTC failed'); closeEditorPeerConnection() }
+    }
+    for (const track of videoTracks) peer.addTrack(track, stream)
+    const offer = await peer.createOffer()
+    if (peer !== peerConnectionRef.current) return
+    await peer.setLocalDescription(offer)
+    if (!peer.localDescription?.sdp) throw new Error('Offer SDP was not created')
+    sendWebRtcMessage(scope, 'offer', { sdp: peer.localDescription.sdp })
+    setSignalingStatus('WebRTC connecting')
   }
   function stopLiveSession() {
     const socket = signalingSocketRef.current
-    if (socket && signalingScope && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(signalingScope, 'session-ended', { reason: 'controller-stopped' })))
+    const scope = signalingScopeRef.current
+    if (socket && scope && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(scope, 'session-ended', { reason: 'controller-stopped' })))
+    closeEditorPeerConnection()
     socket?.close(1000, 'controller-stopped')
     signalingSocketRef.current = null
+    signalingScopeRef.current = null
     setSignalingScope(null)
     setSignalingStatus('Session ended')
   }
@@ -135,6 +185,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const signalingUrl = import.meta.env.VITE_SIGNALING_URL
     if (!target) return setSignalingStatus('Choose a target player')
     if (!signalingUrl) return setSignalingStatus('Signaling URL is not configured')
+    if (!cameraStreamRef.current?.getVideoTracks().some(track => track.readyState === 'live')) return setSignalingStatus('Enable camera preview first')
     const { data, error } = await supabase.auth.getSession()
     if (error || !data.session?.access_token) return setSignalingStatus('Sign in again to start signaling')
     stopLiveSession()
@@ -143,20 +194,32 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     try { socket = new WebSocket(signalingUrl) } catch { setSignalingStatus('Signaling error'); return }
     signalingSocketRef.current = socket
     socket.addEventListener('open', () => socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'editor', accessToken: data.session!.access_token, wallId: target.wall_id, targetDeviceId: target.id, liveSourceId: selected.content.liveSourceId })))
-    socket.addEventListener('message', (event) => {
+    socket.addEventListener('message', (event) => { void (async () => {
       if (typeof event.data !== 'string') return
       const message = parseServerSignalingMessage(event.data)
       if (!message) return setSignalingStatus('Signaling error')
-      if (message.type === 'authenticated' && message.role === 'editor') { setSignalingScope(message); setSignalingStatus('Waiting for player') }
-      else if (message.type === 'peer-ready') setSignalingStatus('Player connected')
-      else if (message.type === 'session-ended') {
-        if (message.payload.reason === 'player-left') setSignalingStatus('Waiting for player')
-        else { setSignalingScope(null); setSignalingStatus('Session ended') }
+      if (message.type === 'authenticated' && message.role === 'editor') { signalingScopeRef.current = message; setSignalingScope(message); setSignalingStatus('Waiting for player') }
+      else if (message.type === 'peer-ready') {
+        const scope = signalingScopeRef.current
+        if (!scope || message.sessionId !== scope.sessionId) return
+        await startEditorPeerConnection(scope)
       }
-      else if (message.type === 'error') setSignalingStatus('Signaling error')
-    })
-    socket.addEventListener('error', () => setSignalingStatus('Signaling error'))
-    socket.addEventListener('close', () => { if (signalingSocketRef.current === socket) { signalingSocketRef.current = null; setSignalingScope(null); setSignalingStatus(current => current === 'Session ended' ? current : 'Session ended') } })
+      else if (message.type === 'answer') {
+        const peer = peerConnectionRef.current
+        if (!peer) return
+        await peer.setRemoteDescription({ type: 'answer', sdp: message.payload.sdp })
+        await flushIceCandidates(peer, pendingIceCandidatesRef.current)
+      }
+      else if (message.type === 'ice-candidate') await addOrQueueIceCandidate(peerConnectionRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingIceCandidatesRef.current)
+      else if (message.type === 'session-ended') {
+        closeEditorPeerConnection()
+        if (message.payload.reason === 'player-left') setSignalingStatus('Waiting for player')
+        else { signalingScopeRef.current = null; setSignalingScope(null); setSignalingStatus('Session ended') }
+      }
+      else if (message.type === 'error') { closeEditorPeerConnection(); setSignalingStatus('Signaling error') }
+    })().catch(() => { closeEditorPeerConnection(); setSignalingStatus('WebRTC failed') }) })
+    socket.addEventListener('error', () => { closeEditorPeerConnection(); setSignalingStatus('Signaling error') })
+    socket.addEventListener('close', () => { if (signalingSocketRef.current === socket) { closeEditorPeerConnection(); signalingSocketRef.current = null; signalingScopeRef.current = null; setSignalingScope(null); setSignalingStatus('Session ended') } })
   }
   async function startCamera(requestedCameraId = selectedCameraId) {
     if (!selected || selected.type !== 'live') return
@@ -168,7 +231,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: cameraId } }, audio: false })
       cameraStreamRef.current = stream
-      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamRef.current === stream) { cameraStreamRef.current = null; setCameraStream(null); setCameraLayerId(null); setCameraError('Camera is no longer available.'); void listCameras() } } })
+      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamRef.current === stream) { cameraStreamRef.current = null; setCameraStream(null); setCameraLayerId(null); closeEditorPeerConnection(); if (signalingScopeRef.current) stopLiveSession(); setCameraError('Camera is no longer available.'); void listCameras() } } })
       setCameraStream(stream)
       setCameraLayerId(selected.id)
       setCameraError('')
