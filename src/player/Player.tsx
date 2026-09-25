@@ -4,6 +4,7 @@ import type { Device, Scene, SceneLayer } from '../types'
 import { ScenePreview } from '../rendering/ScenePreview'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage, type LiveSessionLease } from '../signalingProtocol'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
+import { recoveryDelayMs } from '../lib/recovery'
 
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
 
@@ -113,7 +114,6 @@ export function Player() {
     }
     if (clearStreams) {
       setLiveStreams(current => {
-        for (const stream of current.values()) stream.getTracks().forEach(track => track.stop())
         return current.size ? new Map() : current
       })
       setHasRemoteVideoTrack(false)
@@ -124,6 +124,13 @@ export function Player() {
     const socket = signalingSocketRef.current
     if (socket?.readyState !== WebSocket.OPEN || signalingScopeRef.current?.sessionId !== scope.sessionId) throw new Error('Signaling session is unavailable')
     socket.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
+  }
+  function requestFreshPlayerOffer(scope = signalingScopeRef.current) {
+    const socket = signalingSocketRef.current
+    if (!scope || socket?.readyState !== WebSocket.OPEN) return false
+    socket.send(JSON.stringify(scopedClientMessage(scope, 'peer-ready', {})))
+    setSignalingStatus('recovering')
+    return true
   }
   function createPlayerPeerConnection(scope: AuthenticatedMessage) {
     const earlyCandidates = pendingIceCandidatesRef.current.splice(0)
@@ -149,17 +156,13 @@ export function Player() {
           disconnectGraceTimerRef.current = null
           if (peer !== peerConnectionRef.current || peer.connectionState !== 'disconnected') return
           const scopeForRetry = signalingScopeRef.current
-          closePlayerPeerConnection()
-          if (scopeForRetry) {
-            try { signalingSocketRef.current?.send(JSON.stringify(scopedClientMessage(scopeForRetry, 'peer-ready', {}))) } catch { setSignalingStatus('error') }
-          }
+          closePlayerPeerConnection(true, false)
+          try { requestFreshPlayerOffer(scopeForRetry) } catch { setSignalingStatus('error') }
         }, WEBRTC_DISCONNECT_GRACE_MS)
       } else if (peer.connectionState === 'failed') {
         const scopeForRetry = signalingScopeRef.current
-        closePlayerPeerConnection()
-        if (scopeForRetry) {
-          try { signalingSocketRef.current?.send(JSON.stringify(scopedClientMessage(scopeForRetry, 'peer-ready', {}))) } catch { setSignalingStatus('error') }
-        }
+        closePlayerPeerConnection(true, false)
+        try { requestFreshPlayerOffer(scopeForRetry) } catch { setSignalingStatus('error') }
       }
     }
     peer.oniceconnectionstatechange = () => { if (peer === peerConnectionRef.current) setIceConnectionState(peer.iceConnectionState) }
@@ -204,6 +207,7 @@ export function Player() {
     let stopped = false
     let sessionEnded = false
     let retryTimer = 0
+    let retryAttempt = 0
     let socket: WebSocket | null = null
     const leaseIsCurrent = () => {
       const current = liveSessionRef.current
@@ -211,16 +215,16 @@ export function Player() {
     }
     const retry = () => {
       window.clearTimeout(retryTimer)
-      if (!stopped && !sessionEnded && leaseIsCurrent()) retryTimer = window.setTimeout(connect, 4000)
+      if (!stopped && !sessionEnded && leaseIsCurrent()) retryTimer = window.setTimeout(connect, recoveryDelayMs(retryAttempt++))
     }
     function connect() {
       if (stopped) return
       setSignalingStatus('connecting')
       try { socket = new WebSocket(activeSession.signalingUrl) } catch { setSignalingStatus('error'); retry(); return }
       signalingSocketRef.current = socket
-      socket.addEventListener('open', () => socket?.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId: activeDevice.id, deviceToken: activeDevice.token, sessionId: activeSession.sessionId })))
+      socket.addEventListener('open', () => { if (!stopped && signalingSocketRef.current === socket) socket?.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId: activeDevice.id, deviceToken: activeDevice.token, sessionId: activeSession.sessionId })) })
       socket.addEventListener('message', (event) => { void (async () => {
-        if (typeof event.data !== 'string') return
+        if (typeof event.data !== 'string' || stopped || signalingSocketRef.current !== socket) return
         const message = parseServerSignalingMessage(event.data)
         if (!message) return setSignalingStatus('error')
         if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === activeSession.sessionId) {
@@ -231,20 +235,25 @@ export function Player() {
           if (!preservePeer) closePlayerPeerConnection()
           signalingScopeRef.current = message
           setSignalingStatus('connected')
-          if (!preservePeer) socket?.send(JSON.stringify(scopedClientMessage(message as AuthenticatedMessage, 'peer-ready', {})))
+          retryAttempt = 0
+          if (!preservePeer) requestFreshPlayerOffer(message as AuthenticatedMessage)
         } else if (message.type === 'offer' && !safeMode && !videosDisabled) {
           const scope = signalingScopeRef.current
-          if (scope && message.sessionId === scope.sessionId) await acceptOffer(scope, message.payload.sdp)
-        } else if (message.type === 'ice-candidate' && !safeMode && !videosDisabled) await addOrQueueIceCandidate(peerConnectionRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingIceCandidatesRef.current)
+          if (scope && message.sessionId === scope.sessionId && message.generation === scope.generation) await acceptOffer(scope, message.payload.sdp)
+        } else if (message.type === 'ice-candidate' && !safeMode && !videosDisabled) {
+          const scope = signalingScopeRef.current
+          if (scope && message.sessionId === scope.sessionId && message.generation === scope.generation) await addOrQueueIceCandidate(peerConnectionRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingIceCandidatesRef.current)
+        }
         else if (message.type === 'session-ended') { sessionEnded = true; closePlayerPeerConnection(); signalingScopeRef.current = null; setSignalingStatus('ended') }
         else if (message.type === 'error') { closePlayerPeerConnection(); setSignalingStatus('error') }
       })().catch(() => { closePlayerPeerConnection(false); setWebRtcConnectionState('failed') }) })
       socket.addEventListener('close', () => {
+        if (signalingSocketRef.current !== socket) return
         const peer = peerConnectionRef.current
         const retainMediaPeer = leaseIsCurrent() && (peer?.connectionState === 'connected' || peer?.connectionState === 'disconnected')
         if (!retainMediaPeer) closePlayerPeerConnection()
         signalingScopeRef.current = null
-        if (signalingSocketRef.current === socket) signalingSocketRef.current = null
+        signalingSocketRef.current = null
         if (!stopped && !sessionEnded) setSignalingStatus('disconnected')
         retry()
       })

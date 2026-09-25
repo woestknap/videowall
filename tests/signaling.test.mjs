@@ -19,6 +19,7 @@ function fakeAuth() {
   const leases = new Map()
   return {
     leases,
+    async authorizeExistingEditor({ accessToken, controllerUserId }) { return accessToken === ACCESS_TOKEN && controllerUserId === 'user-a' },
     async authorizeEditor(input) {
       if (input.accessToken !== ACCESS_TOKEN || input.wallId !== WALL_A) return null
       const expectedWall = input.targetDeviceId === DEVICE_A || input.targetDeviceId === DEVICE_C ? WALL_A : WALL_B
@@ -236,7 +237,7 @@ test('cross-session signaling cannot be relayed', () => fixture(async ({ open })
   assert.equal(leaked, false)
 }))
 
-test('disconnect cleans up peer and session state', () => fixture(async ({ open, service, auth }) => {
+test('player departure clears only that peer while an editor reconnect grace keeps its lease', () => fixture(async ({ open, service, auth }) => {
   const { socket: editor, authenticated } = await authenticateEditor(open)
   const player = await open()
   const playerResponse = nextMessage(player)
@@ -249,6 +250,20 @@ test('disconnect cleans up peer and session state', () => fixture(async ({ open,
   editor.close()
   await new Promise((resolve) => editor.once('close', resolve))
   await new Promise((resolve) => setTimeout(resolve, 20))
-  assert.equal(service.sessions.size, 0)
-  assert.equal(auth.leases.size, 0)
+  assert.equal(service.sessions.size, 1)
+  assert.equal(auth.leases.size, 1)
+}))
+
+test('editor reconnect resumes its lease and stale socket close cannot end the replacement', () => fixture(async ({ open, service }) => {
+  const { socket: first, authenticated } = await authenticateEditor(open)
+  first.close()
+  await new Promise((resolve) => first.once('close', resolve))
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(service.sessions.has(authenticated.sessionId), true)
+
+  const replacement = await open()
+  const resumed = nextMessage(replacement)
+  replacement.send(JSON.stringify(editorAuth({ sessionId: authenticated.sessionId })))
+  assert.equal((await resumed).sessionId, authenticated.sessionId)
+  assert.ok(service.sessions.get(authenticated.sessionId).editor)
 }))

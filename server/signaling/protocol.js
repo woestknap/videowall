@@ -53,8 +53,8 @@ export function parseClientMessage(raw) {
   }
   if (message.type === 'auth') {
     if (message.role === 'editor') {
-      const keys = ['version', 'type', 'role', 'accessToken', 'wallId', 'targetDeviceId', 'liveSourceId']
-      if (hasOnlyKeys(message, keys) && typeof message.accessToken === 'string' && message.accessToken.length >= 20 && message.accessToken.length <= 8192 && isUuid(message.wallId) && isUuid(message.targetDeviceId) && isUuid(message.liveSourceId)) return { ok: true, message }
+      const keys = ['version', 'type', 'role', 'accessToken', 'wallId', 'targetDeviceId', 'liveSourceId', 'sessionId']
+      if (hasOnlyKeys(message, keys) && typeof message.accessToken === 'string' && message.accessToken.length >= 20 && message.accessToken.length <= 8192 && isUuid(message.wallId) && isUuid(message.targetDeviceId) && isUuid(message.liveSourceId) && (message.sessionId === undefined || SESSION_ID.test(message.sessionId))) return { ok: true, message }
     }
     if (message.role === 'player') {
       const keys = ['version', 'type', 'role', 'deviceId', 'deviceToken', 'sessionId']

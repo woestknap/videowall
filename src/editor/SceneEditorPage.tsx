@@ -3,6 +3,7 @@ import { ScreenLayoutControls } from '../ScreenLayoutControls'
 import { fitEditorView, panForCursorZoom } from '../lib/editorZoom'
 import { supabase } from '../lib/supabase'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
+import { recoveryDelayMs } from '../lib/recovery'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, layerReference, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage } from '../signalingProtocol'
@@ -41,7 +42,8 @@ function layerLabel(layer: SceneLayer): string {
   return layer.content.text?.trim().replace(/\s+/g, ' ').slice(0, 48) || fallback
 }
 
-type TargetSignalingState = 'connecting' | 'waiting' | 'connected' | 'disconnected' | 'error' | 'ended'
+const WEBRTC_DISCONNECT_GRACE_MS = 5000
+type TargetSignalingState = 'connecting' | 'waiting' | 'connected' | 'recovering' | 'disconnected' | 'error' | 'ended'
 type TargetStatus = {
   deviceId: string
   name: string
@@ -52,11 +54,17 @@ type TargetStatus = {
 }
 type TargetRuntime = {
   device: Device
-  socket: WebSocket
+  socket: WebSocket | null
   scope: AuthenticatedMessage | null
   peer: RTCPeerConnection | null
   pendingIceCandidates: PendingIceCandidate[]
   stopped: boolean
+  accessToken: string
+  signalingUrl: string
+  liveSourceId: string
+  retryAttempt: number
+  retryTimer: number | null
+  disconnectGraceTimer: number | null
 }
 
 export function SceneEditorPage({ sceneId }: { sceneId: string }) {
@@ -146,6 +154,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     setTargetStatuses(current => current[deviceId] ? { ...current, [deviceId]: { ...current[deviceId], ...change } } : current)
   }
   function closeTargetPeer(runtime: TargetRuntime) {
+    if (runtime.disconnectGraceTimer !== null) { window.clearTimeout(runtime.disconnectGraceTimer); runtime.disconnectGraceTimer = null }
     const peer = runtime.peer
     runtime.peer = null
     runtime.pendingIceCandidates.splice(0)
@@ -156,14 +165,16 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     peer.close()
   }
   function sendWebRtcMessage<T extends 'offer' | 'ice-candidate'>(runtime: TargetRuntime, type: T, payload: T extends 'offer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) {
-    if (runtime.socket.readyState !== WebSocket.OPEN || !runtime.scope) throw new Error('Signaling session is unavailable')
+    if (runtime.socket?.readyState !== WebSocket.OPEN || !runtime.scope) throw new Error('Signaling session is unavailable')
     runtime.socket.send(JSON.stringify(scopedClientMessage(runtime.scope, type, payload)))
   }
   async function startEditorPeerConnection(runtime: TargetRuntime) {
     const scope = runtime.scope
     const stream = cameraStreamRef.current
     const videoTracks = stream?.getVideoTracks().filter(track => track.readyState === 'live') ?? []
-    if (!scope || !stream || !videoTracks.length) { updateTargetStatus(runtime.device.id, { connectionState: 'failed' }); return }
+    if (!scope || !stream || !videoTracks.length) { updateTargetStatus(runtime.device.id, { connectionState: 'failed', signaling: 'recovering' }); return }
+    const current = runtime.peer
+    if (current && (current.connectionState === 'connected' || current.connectionState === 'connecting')) return
     closeTargetPeer(runtime)
     updateTargetStatus(runtime.device.id, { connectionState: 'new', iceConnectionState: 'new' })
     const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS))
@@ -176,9 +187,20 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     peer.onconnectionstatechange = () => {
       if (peer !== runtime.peer) return
       updateTargetStatus(runtime.device.id, { connectionState: peer.connectionState })
-      if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-        updateTargetStatus(runtime.device.id, { signaling: 'error', peerReady: false })
-        stopTargetRuntime(runtime, true)
+      if (peer.connectionState === 'connected') {
+        runtime.retryAttempt = 0
+        if (runtime.disconnectGraceTimer !== null) { window.clearTimeout(runtime.disconnectGraceTimer); runtime.disconnectGraceTimer = null }
+      } else if (peer.connectionState === 'disconnected' && runtime.disconnectGraceTimer === null) {
+        updateTargetStatus(runtime.device.id, { signaling: 'recovering' })
+        runtime.disconnectGraceTimer = window.setTimeout(() => {
+          runtime.disconnectGraceTimer = null
+          if (runtime.peer !== peer || peer.connectionState !== 'disconnected') return
+          closeTargetPeer(runtime)
+          updateTargetStatus(runtime.device.id, { signaling: 'recovering', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
+        }, WEBRTC_DISCONNECT_GRACE_MS)
+      } else if (peer.connectionState === 'failed') {
+        closeTargetPeer(runtime)
+        updateTargetStatus(runtime.device.id, { signaling: 'recovering', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
       }
     }
     peer.oniceconnectionstatechange = () => { if (peer === runtime.peer) updateTargetStatus(runtime.device.id, { iceConnectionState: peer.iceConnectionState }) }
@@ -193,11 +215,12 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   function stopTargetRuntime(runtime: TargetRuntime, notifyPeer: boolean) {
     if (runtime.stopped) return
     runtime.stopped = true
-    if (notifyPeer && runtime.scope && runtime.socket.readyState === WebSocket.OPEN) {
+    if (runtime.retryTimer !== null) window.clearTimeout(runtime.retryTimer)
+    if (notifyPeer && runtime.scope && runtime.socket?.readyState === WebSocket.OPEN) {
       try { runtime.socket.send(JSON.stringify(scopedClientMessage(runtime.scope, 'session-ended', { reason: 'controller-stopped' }))) } catch { /* socket cleanup continues */ }
     }
     closeTargetPeer(runtime)
-    try { runtime.socket.close(1000, 'controller-stopped') } catch { /* socket may still be connecting */ }
+    try { runtime.socket?.close(1000, 'controller-stopped') } catch { /* socket may still be connecting */ }
     if (targetRuntimesRef.current.get(runtime.device.id) === runtime) targetRuntimesRef.current.delete(runtime.device.id)
   }
   function stopLiveSession(updateUi = true) {
@@ -211,27 +234,42 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     }
   }
   function startTargetSession(device: Device, liveSourceId: string, accessToken: string, signalingUrl: string) {
-    let socket: WebSocket
-    try { socket = new WebSocket(signalingUrl) } catch { updateTargetStatus(device.id, { signaling: 'error' }); return }
-    const runtime: TargetRuntime = { device, socket, scope: null, peer: null, pendingIceCandidates: [], stopped: false }
+    const runtime: TargetRuntime = { device, socket: null, scope: null, peer: null, pendingIceCandidates: [], stopped: false, accessToken, signalingUrl, liveSourceId, retryAttempt: 0, retryTimer: null, disconnectGraceTimer: null }
     targetRuntimesRef.current.set(device.id, runtime)
-    socket.addEventListener('open', () => { if (!runtime.stopped) socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'editor', accessToken, wallId: device.wall_id, targetDeviceId: device.id, liveSourceId })) })
+    const scheduleReconnect = () => {
+      if (runtime.stopped || runtime.retryTimer !== null) return
+      const delay = recoveryDelayMs(runtime.retryAttempt++)
+      runtime.retryTimer = window.setTimeout(() => { runtime.retryTimer = null; connect() }, delay)
+    }
+    const connect = () => {
+      if (runtime.stopped || runtime.socket?.readyState === WebSocket.OPEN || runtime.socket?.readyState === WebSocket.CONNECTING) return
+      let socket: WebSocket
+      updateTargetStatus(device.id, { signaling: runtime.scope ? 'recovering' : 'connecting' })
+      try { socket = new WebSocket(runtime.signalingUrl) } catch { scheduleReconnect(); return }
+      runtime.socket = socket
+      socket.addEventListener('open', () => {
+        if (runtime.stopped || runtime.socket !== socket) return
+        socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'editor', accessToken: runtime.accessToken, wallId: device.wall_id, targetDeviceId: device.id, liveSourceId: runtime.liveSourceId, ...(runtime.scope ? { sessionId: runtime.scope.sessionId } : {}) }))
+      })
     socket.addEventListener('message', event => { void (async () => {
-      if (typeof event.data !== 'string' || runtime.stopped) return
+        if (typeof event.data !== 'string' || runtime.stopped || runtime.socket !== socket) return
       const message = parseServerSignalingMessage(event.data)
       if (!message) return updateTargetStatus(device.id, { signaling: 'error' })
-      if (message.type === 'authenticated' && message.role === 'editor') {
-        runtime.scope = message
-        updateTargetStatus(device.id, { signaling: 'waiting' })
+        if (message.type === 'authenticated' && message.role === 'editor') {
+          if (runtime.scope && message.sessionId !== runtime.scope.sessionId) return
+          runtime.scope = message
+          runtime.retryAttempt = 0
+          updateTargetStatus(device.id, { signaling: 'waiting' })
       } else if (message.type === 'peer-ready') {
-        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId) return
+        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId || message.generation !== runtime.scope.generation) return
         updateTargetStatus(device.id, { signaling: 'connected', peerReady: true })
         await startEditorPeerConnection(runtime)
       } else if (message.type === 'answer') {
-        if (!runtime.peer) return
+        if (!runtime.peer || message.generation !== runtime.scope?.generation || message.sessionId !== runtime.scope?.sessionId) return
         await runtime.peer.setRemoteDescription({ type: 'answer', sdp: message.payload.sdp })
         await flushIceCandidates(runtime.peer, runtime.pendingIceCandidates)
       } else if (message.type === 'ice-candidate') {
+        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId || message.generation !== runtime.scope.generation) return
         const candidate = message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }
         await addOrQueueIceCandidate(runtime.peer, candidate, runtime.pendingIceCandidates)
       } else if (message.type === 'session-ended') {
@@ -247,20 +285,18 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
           stopTargetRuntime(runtime, false)
         }
       } else if (message.type === 'error') {
-        updateTargetStatus(device.id, { signaling: 'error', connectionState: 'idle', iceConnectionState: 'idle' })
-        stopTargetRuntime(runtime, false)
+        updateTargetStatus(device.id, { signaling: 'recovering' })
+        scheduleReconnect()
       }
-    })().catch(() => { updateTargetStatus(device.id, { signaling: 'error', connectionState: 'failed' }); stopTargetRuntime(runtime, true) }) })
-    socket.addEventListener('error', () => { closeTargetPeer(runtime); updateTargetStatus(device.id, { signaling: 'error' }) })
-    socket.addEventListener('close', () => {
-      closeTargetPeer(runtime)
-      if (targetRuntimesRef.current.get(device.id) === runtime) targetRuntimesRef.current.delete(device.id)
-      if (!runtime.stopped) updateTargetStatus(device.id, { signaling: 'disconnected', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' })
-      if (!targetRuntimesRef.current.size) {
-        setLiveSessionActive(false)
-        if (!runtime.stopped) setLiveSessionStatus('No active target sessions')
-      }
-    })
+    })().catch(() => { updateTargetStatus(device.id, { signaling: 'recovering', connectionState: 'failed' }); scheduleReconnect() }) })
+      socket.addEventListener('error', () => { if (runtime.socket === socket) updateTargetStatus(device.id, { signaling: 'recovering' }) })
+      socket.addEventListener('close', () => {
+        if (runtime.socket !== socket) return
+        runtime.socket = null
+        if (!runtime.stopped) { updateTargetStatus(device.id, { signaling: 'recovering' }); scheduleReconnect() }
+      })
+    }
+    connect()
   }
   async function startLiveSession() {
     if (!supabase || !selected || selected.type !== 'live' || !selected.content.liveSourceId) return

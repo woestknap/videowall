@@ -37,7 +37,7 @@ export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publ
   const wss = new WebSocketServer({ port, host, maxPayload: MAX_SIGNALING_MESSAGE_BYTES })
 
   function send(socket, message) {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
   }
 
   function reject(socket, code, message, closeCode = 1008) {
@@ -63,6 +63,21 @@ export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publ
   }
 
   async function authenticateEditor(socket, message) {
+    if (message.sessionId) {
+      const existing = sessions.get(message.sessionId)
+      const valid = existing && sameScope({ ...message, sessionId: message.sessionId }, existing.scope) && await auth.authorizeExistingEditor?.({ accessToken: message.accessToken, controllerUserId: existing.scope.controllerUserId })
+      if (!valid) return reject(socket, 'unauthorized', 'Editor is not authorized to resume this live session.')
+      if (existing.editor && existing.editor !== socket) {
+        existing.editor.binding = null
+        existing.editor.close(1008, 'replaced')
+      }
+      existing.editor = socket
+      socket.binding = { role: 'editor', session: existing }
+      send(socket, publicScope(existing.scope, 'editor'))
+      // A player may have asked for a new offer while the controller socket was away.
+      if (existing.player) send(socket, scopedMessage(existing.scope, 'peer-ready', {}))
+      return
+    }
     if (sessions.size >= maxSessions) return reject(socket, 'capacity', 'The signaling service is at session capacity.', 1013)
     const id = sessionId()
     const expiresAt = new Date(now() + SESSION_TTL_MS).toISOString()
@@ -79,7 +94,7 @@ export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publ
     sessions.set(id, session)
     socket.binding = { role: 'editor', session }
     session.renewTimer = setInterval(async () => {
-      if (socket.readyState !== WebSocket.OPEN) return
+      if (session.editor?.readyState !== WebSocket.OPEN) return
       const nextExpiry = new Date(now() + SESSION_TTL_MS).toISOString()
       try {
         await auth.renewLease?.({ ...scope, expiresAt: nextExpiry })
@@ -151,7 +166,7 @@ export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publ
       socket.binding = null
       if (!binding) return
       const { role, session } = binding
-      if (role === 'editor') void endSession(session, 'controller-stopped', socket)
+      if (role === 'editor' && session.editor === socket) session.editor = null
       else if (session.player === socket) {
         session.player = null
         send(session.editor, scopedMessage(session.scope, 'session-ended', { reason: 'player-left' }))

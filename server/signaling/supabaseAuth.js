@@ -5,6 +5,10 @@ export function createSupabaseSignalingAuth({ supabaseUrl, serviceRoleKey }) {
   const client = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } })
 
   return {
+    async authorizeExistingEditor({ accessToken, controllerUserId }) {
+      const { data, error } = await client.auth.getUser(accessToken)
+      return !error && data.user?.id === controllerUserId
+    },
     async authorizeEditor({ accessToken, sessionId, wallId, targetDeviceId, liveSourceId, expiresAt, signalingUrl }) {
       const { data: userData, error: userError } = await client.auth.getUser(accessToken)
       if (userError || !userData.user) return null
