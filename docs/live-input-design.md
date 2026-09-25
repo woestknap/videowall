@@ -2,7 +2,7 @@
 
 ## Status and boundary
 
-LIVE-05A and LIVE-05B are implemented for one editor and one target player. The editor can reuse its video-only camera preview stream in one authenticated `RTCPeerConnection`; the player keeps the received stream in memory by `liveSourceId` and renders it through the normal live-layer geometry. Supabase stores only the expiring discovery lease, and the WSS service relays only signaling metadata. Multiple players, TURN and broader recovery remain future work.
+LIVE-05A and LIVE-05B are complete. LIVE-06 implements editor fanout and is ready for multi-Pi hardware acceptance. One editor reuses its video-only camera preview stream across one authenticated, device-scoped `RTCPeerConnection` per targeted player. Each player keeps its received stream in memory by `liveSourceId` and renders it through the normal live-layer geometry. Supabase stores only expiring discovery leases, and the WSS service relays only signaling metadata. TURN and broader recovery remain future work.
 
 A live-source definition and a live session remain different things: scene JSON may identify the source, but it must never contain a `MediaStream`, SDP, ICE candidates, peer connections, player credentials or session secrets.
 
@@ -89,29 +89,29 @@ An implementation may call its internal route `live:<sessionId>`, but clients do
 
 ## WebRTC peer flow
 
-1. The editor already owns the camera `MediaStream`. It creates one `RTCPeerConnection`, adds the video track, creates an offer and sends it only after receiving `ready`.
-2. The player creates one receive-only peer connection, applies the offer, creates an answer and attaches the received stream to a `video` element. LIVE-05 remains isolated from `ScenePreview` and layer placement.
+1. The editor already owns the camera `MediaStream`. For every targeted device it creates an independent `RTCPeerConnection`, adds the same video track, creates an offer and sends it only after that device reports `ready`.
+2. Each player creates one receive-only peer connection, applies its offer, creates an answer and exposes the received stream to the existing live-layer renderer.
 3. Both sides trickle ICE candidates through WSS. Browser-native WebRTC performs encoding, packetization, congestion control and decoding; application JavaScript must not process or relay frames.
 4. Once ICE/connection state reaches `connected`, authenticated socket heartbeats keep the in-memory participant connections current; the service renews the database discovery lease only while the controller is active. A player alone cannot keep a controller session alive. Explicit stop, camera-track end, replacement by another session or terminal peer failure sends `end` and closes tracks, peer connection and socket.
 
-For the first Pi proof of concept, capture video only, create one peer connection, and start conservatively at no more than 1280×720 at 30 fps. Codec selection should be left to Chromium negotiation, with H.264 and VP8 behavior measured on the actual Pi 3/Pi 4 kiosk images. Do not assume hardware decoding merely because a codec is advertised. Autoplay should use `playsInline`; no audio track avoids autoplay and echo concerns already outside V1.
+For the Pi proof of concept, capture video only and start conservatively at no more than 1280×720 at 30 fps. Codec selection should be left to Chromium negotiation, with H.264 and VP8 behavior measured on the actual Pi 3/Pi 4 kiosk images. Do not assume hardware decoding merely because a codec is advertised. Autoplay should use `playsInline`; no audio track avoids autoplay and echo concerns already outside V1.
 
 ### End-to-end V1 sequence
 
 1. The editor enables the existing local camera preview; capture remains unchanged.
-2. The authenticated editor asks the signalling service to start a session for one wall, live source and target device.
-3. The service authorizes the request and creates the short-lived discovery announcement.
-4. The target Pi learns of the session on its normal `get_player_state` poll, opens WSS and authenticates its device ID/token.
-5. The service binds both sockets to the session; the Pi creates its receive-only peer connection and sends `ready`.
-6. The editor creates its peer connection, adds the camera video track, sets its local offer and sends `offer`.
-7. The Pi applies the offer, creates and sets its answer, then returns `answer`.
-8. Both peers send trickled `ice-candidate` messages until WebRTC establishes a path. The Pi receives the browser-native `MediaStream` directly from the editor.
-9. An explicit stop, ended camera track, peer failure, replacement, disconnect timeout or lease expiry sends/causes `end`.
-10. Both clients close peer connections, stop only tracks they own, detach media elements and close the session socket; the service expires the route and discovery announcement.
+2. The authenticated editor asks the signalling service to start one session for each device selected by the live layer's targeting.
+3. The service authorizes each request and creates an independent short-lived discovery announcement.
+4. Each target Pi learns of only its own session on its normal `get_player_state` poll, opens WSS and authenticates its device ID/token.
+5. The service binds each editor/player socket pair to its device-scoped session; each Pi creates its receive-only peer connection and sends `ready`.
+6. The editor creates that target's peer connection, adds the shared camera video track, sets its local offer and sends `offer`.
+7. Each Pi applies its offer, creates and sets its answer, then returns `answer` through its own session.
+8. Each pair exchanges trickled `ice-candidate` messages until WebRTC establishes a direct path. Every Pi receives a browser-native `MediaStream` directly from the editor.
+9. An explicit stop ends all target sessions. A target-specific failure, replacement, disconnect or lease expiry cleans up that target without stopping the camera or other peers.
+10. Both sides close their peer connection and socket, the player detaches its runtime stream, and the service expires that device's route and discovery announcement.
 
 ## Scene integration boundary
 
-LIVE-05B keeps reception isolated from normal rendering. Later, LIVE-07 should associate the received runtime `MediaStream` with its `liveSourceId` in player memory and let the existing live layer resolve that stream. `SceneLayer` geometry, `content.liveSourceId`, device targeting and wall crop rules remain unchanged. Connection URLs, SDP, ICE and peer state never enter scene JSON.
+The player associates each received runtime `MediaStream` with its `liveSourceId` in memory, and the existing live layer resolves that stream. `SceneLayer` geometry, `content.liveSourceId`, device targeting and wall crop rules remain unchanged. Connection URLs, SDP, ICE and peer state never enter scene JSON.
 
 ## ICE, STUN and TURN
 
@@ -144,9 +144,9 @@ Connection failures should be visible as bounded states such as waiting for play
 - Configure allowed web origins at the signalling service. Origin checking supplements authentication; it does not replace it.
 - A compromised paired player can receive only sessions explicitly targeted to its device, and a compromised controller session can signal only walls allowed by its Supabase identity.
 
-## Future one-peer-per-Pi expansion
+## One-peer-per-Pi fanout
 
-LIVE-06 should create a child peer session per participating device while retaining one logical source/controller session. Each child has its own `sessionId`, target device, generation, SDP, ICE state and failure status. The editor adds the same captured video track to one `RTCPeerConnection` per Pi; signalling never broadcasts one device's SDP or candidates to another.
+LIVE-06 creates one peer session per participating device under one logical source/controller action. Each peer has its own `sessionId`, target device, generation, SDP, ICE state and failure status. The editor adds the same captured video track to one `RTCPeerConnection` per Pi; signalling never broadcasts one device's SDP or candidates to another. Layer targeting is the source of truth. For V1, target changes while streaming require **End session → Save → Start live session** instead of live peer reconciliation.
 
 This mesh is simple and lets each Pi decode only its stream, but the controller encodes/sends roughly one stream per player and uplink cost grows linearly. Measure editor CPU, outbound bitrate, connection setup time and Pi 3/Pi 4 decode stability before raising resolution or player count. If that cost becomes unacceptable, an SFU is a later topology decision; it is not part of V1 and must not change wall coordinates or layer targeting semantics.
 
@@ -157,12 +157,12 @@ The proof of concept should be split so security and transport are independently
 1. **LIVE-05A — authorized signalling and discovery:** add the narrow player validation RPC, expiring discovery lease, player-state projection and dedicated WSS service with authenticated, isolated, expiring sessions. Prove `ready`/`end` and reconnect without media.
 2. **LIVE-05B — one-editor/one-Pi WebRTC:** connect the existing editor camera stream to one paired Pi with `offer`, `answer` and trickle ICE; render it in an isolated player proof-of-concept surface and record Pi codec/resolution results.
 
-Full layer rendering, multiple Pi peers and broader error recovery remain LIVE-07, LIVE-06 and LIVE-08 respectively.
+Authorized discovery, direct one-player WebRTC and multi-player fanout are implemented. Broader reconnect and error recovery remain LIVE-08 work.
 
-## LIVE-05A development smoke test
+## Live input development smoke test
 
 Use Node 24. Copy `.env.example` to `.env`. Browser values are `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_SIGNALING_URL` and the optional comma-separated `VITE_WEBRTC_STUN_URLS`; the signaling process additionally requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SIGNALING_PORT`, `PUBLIC_SIGNALING_URL` and `SIGNALING_ALLOWED_ORIGINS`. The service-role key is server-only. `ws://localhost:8787` is valid only for local development; deploy behind TLS and use `wss://` in production. An empty STUN list still permits LAN host candidates; TURN credentials are not supported in this phase.
 
-Apply the migration to a linked development project with `npx supabase db push`, then run `npm run dev` and, in a second terminal, `npm run signaling`. Sign in to the editor, save a live layer that targets one paired display, enable its camera preview, choose that display and select **Start live session**. The editor progresses from **Signaling connecting** to **Waiting for player**, **Negotiating WebRTC**, **WebRTC connecting** and **WebRTC connected**. Within the player's normal four-second poll, the target Pi discovers its lease, authenticates, sends `peer-ready`, negotiates WebRTC and renders the camera inside the saved live-layer geometry. `?player=1&debug=1` shows signaling, peer/ICE states and remote-track presence without changing playback.
+Apply the migration to a linked development project with `npx supabase db push`, then run `npm run dev` and, in a second terminal, `npm run signaling`. Sign in to the editor, save a live layer that targets the intended paired displays, enable its camera preview and select **Start live session** once. The editor shows signalling, readiness, WebRTC and ICE state independently for every target. Within the players' normal four-second polls, each target Pi discovers its own lease, authenticates, sends `peer-ready`, negotiates WebRTC and renders the camera inside the saved live-layer geometry. `?player=1&debug=1` shows signalling, peer/ICE states and remote-track presence without changing playback.
 
-Move and resize the live layer and save/publish it to verify the same player crop and transforms used by other media. Select **End session** in the editor to remove the lease, close the peer/socket and detach the remote stream; both sides report an ended/idle state on their next event or poll. Stop the signaling service to verify that ordinary scene polling and non-live rendering continue despite a signaling error.
+First test two Pis, then four. Move and resize a live layer spanning screens and save/publish it to verify the same per-player crop and transforms used by other media. Disconnect one Pi and confirm the other streams remain active. Select **End session** in the editor to remove every lease, close every peer/socket and detach every remote stream. Stop the signaling service to verify that ordinary scene polling and non-live rendering continue despite a signaling error. Editor upload bandwidth and encoding work scale approximately linearly with the number of players; V1 is intended for a small personal wall of roughly four Pis and has no SFU or transcoding.

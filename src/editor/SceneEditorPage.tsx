@@ -41,6 +41,24 @@ function layerLabel(layer: SceneLayer): string {
   return layer.content.text?.trim().replace(/\s+/g, ' ').slice(0, 48) || fallback
 }
 
+type TargetSignalingState = 'connecting' | 'waiting' | 'connected' | 'disconnected' | 'error' | 'ended'
+type TargetStatus = {
+  deviceId: string
+  name: string
+  signaling: TargetSignalingState
+  peerReady: boolean
+  connectionState: RTCPeerConnectionState | 'idle'
+  iceConnectionState: RTCIceConnectionState | 'idle'
+}
+type TargetRuntime = {
+  device: Device
+  socket: WebSocket
+  scope: AuthenticatedMessage | null
+  peer: RTCPeerConnection | null
+  pendingIceCandidates: PendingIceCandidate[]
+  stopped: boolean
+}
+
 export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [scene, setScene] = useState<Scene | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
@@ -62,18 +80,15 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [cameraLayerId, setCameraLayerId] = useState<string | null>(null)
   const [cameraError, setCameraError] = useState('')
   const cameraStreamRef = useRef<MediaStream | null>(null)
-  const [liveTargetDeviceId, setLiveTargetDeviceId] = useState('')
-  const [signalingStatus, setSignalingStatus] = useState('Session not started')
-  const [signalingScope, setSignalingScope] = useState<AuthenticatedMessage | null>(null)
-  const signalingSocketRef = useRef<WebSocket | null>(null)
-  const signalingScopeRef = useRef<AuthenticatedMessage | null>(null)
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
-  const pendingIceCandidatesRef = useRef<PendingIceCandidate[]>([])
+  const [liveSessionStatus, setLiveSessionStatus] = useState('Session not started')
+  const [liveSessionActive, setLiveSessionActive] = useState(false)
+  const [targetStatuses, setTargetStatuses] = useState<Record<string, TargetStatus>>({})
+  const targetRuntimesRef = useRef<Map<string, TargetRuntime>>(new Map())
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => { if (error) { setNotice(error.message); return }; setDevices(data ?? []); setDevicesLoaded(true) }) }, [])
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
   useEffect(() => () => { cameraStreamRef.current?.getTracks().forEach(track => track.stop()) }, [])
-  useEffect(() => () => { closeEditorPeerConnection(); signalingSocketRef.current?.close(1000, 'editor-unmounted') }, [])
+  useEffect(() => () => stopLiveSession(false), [])
   useEffect(() => {
     if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
     const workspace = stageRef.current?.parentElement
@@ -103,6 +118,8 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const currentScene = { ...scene, layers: scene.layers.map(layer => toWorkspaceLayer(layer, scene, devices)) }
   const activeDevices = sceneDevices(currentScene, devices)
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
+  const selectedLiveTargets = selected?.type === 'live' ? activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)) : []
+  const connectedTargetCount = Object.values(targetStatuses).filter(status => status.connectionState === 'connected').length
   const layersByStack = currentScene.layers.map((layer, index) => ({ layer, index })).sort((a, b) => b.layer.zIndex - a.layer.zIndex || a.index - b.index)
   const isSceneDevice = (deviceId: string) => !currentScene.device_ids?.length || currentScene.device_ids.includes(deviceId)
   async function listCameras() {
@@ -123,103 +140,139 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     cameraStreamRef.current = null
     setCameraStream(null)
     setCameraLayerId(null)
-    closeEditorPeerConnection()
-    if (signalingScopeRef.current) stopLiveSession()
+    if (targetRuntimesRef.current.size) stopLiveSession()
   }
-  function closeEditorPeerConnection() {
-    const peer = peerConnectionRef.current
-    peerConnectionRef.current = null
-    pendingIceCandidatesRef.current.splice(0)
+  function updateTargetStatus(deviceId: string, change: Partial<TargetStatus>) {
+    setTargetStatuses(current => current[deviceId] ? { ...current, [deviceId]: { ...current[deviceId], ...change } } : current)
+  }
+  function closeTargetPeer(runtime: TargetRuntime) {
+    const peer = runtime.peer
+    runtime.peer = null
+    runtime.pendingIceCandidates.splice(0)
     if (!peer) return
     peer.onicecandidate = null
     peer.onconnectionstatechange = null
+    peer.oniceconnectionstatechange = null
     peer.close()
   }
-  function sendWebRtcMessage<T extends 'offer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'offer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) {
-    const socket = signalingSocketRef.current
-    if (socket?.readyState !== WebSocket.OPEN || signalingScopeRef.current?.sessionId !== scope.sessionId) throw new Error('Signaling session is unavailable')
-    socket.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
+  function sendWebRtcMessage<T extends 'offer' | 'ice-candidate'>(runtime: TargetRuntime, type: T, payload: T extends 'offer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) {
+    if (runtime.socket.readyState !== WebSocket.OPEN || !runtime.scope) throw new Error('Signaling session is unavailable')
+    runtime.socket.send(JSON.stringify(scopedClientMessage(runtime.scope, type, payload)))
   }
-  async function startEditorPeerConnection(scope: AuthenticatedMessage) {
+  async function startEditorPeerConnection(runtime: TargetRuntime) {
+    const scope = runtime.scope
     const stream = cameraStreamRef.current
     const videoTracks = stream?.getVideoTracks().filter(track => track.readyState === 'live') ?? []
-    if (!stream || !videoTracks.length) { setSignalingStatus('Enable camera preview first'); return }
-    closeEditorPeerConnection()
-    setSignalingStatus('Negotiating WebRTC')
+    if (!scope || !stream || !videoTracks.length) { updateTargetStatus(runtime.device.id, { connectionState: 'failed' }); return }
+    closeTargetPeer(runtime)
+    updateTargetStatus(runtime.device.id, { connectionState: 'new', iceConnectionState: 'new' })
     const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS))
-    peerConnectionRef.current = peer
+    runtime.peer = peer
     peer.onicecandidate = event => {
       try {
-        sendWebRtcMessage(scope, 'ice-candidate', event.candidate ? { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex } : { candidate: null, sdpMid: null, sdpMLineIndex: null })
-      } catch { setSignalingStatus('Signaling error') }
+        sendWebRtcMessage(runtime, 'ice-candidate', event.candidate ? { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex } : { candidate: null, sdpMid: null, sdpMLineIndex: null })
+      } catch { updateTargetStatus(runtime.device.id, { signaling: 'error' }) }
     }
     peer.onconnectionstatechange = () => {
-      if (peer !== peerConnectionRef.current) return
-      if (peer.connectionState === 'connected') setSignalingStatus('WebRTC connected')
-      else if (peer.connectionState === 'connecting') setSignalingStatus('WebRTC connecting')
-      else if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') { setSignalingStatus('WebRTC failed'); closeEditorPeerConnection() }
+      if (peer !== runtime.peer) return
+      updateTargetStatus(runtime.device.id, { connectionState: peer.connectionState })
+      if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+        updateTargetStatus(runtime.device.id, { signaling: 'error', peerReady: false })
+        stopTargetRuntime(runtime, true)
+      }
     }
+    peer.oniceconnectionstatechange = () => { if (peer === runtime.peer) updateTargetStatus(runtime.device.id, { iceConnectionState: peer.iceConnectionState }) }
     for (const track of videoTracks) peer.addTrack(track, stream)
     const offer = await peer.createOffer()
-    if (peer !== peerConnectionRef.current) return
+    if (peer !== runtime.peer) return
     await peer.setLocalDescription(offer)
     if (!peer.localDescription?.sdp) throw new Error('Offer SDP was not created')
-    sendWebRtcMessage(scope, 'offer', { sdp: peer.localDescription.sdp })
-    setSignalingStatus('WebRTC connecting')
+    sendWebRtcMessage(runtime, 'offer', { sdp: peer.localDescription.sdp })
+    updateTargetStatus(runtime.device.id, { connectionState: 'connecting' })
   }
-  function stopLiveSession() {
-    const socket = signalingSocketRef.current
-    const scope = signalingScopeRef.current
-    if (socket && scope && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(scope, 'session-ended', { reason: 'controller-stopped' })))
-    closeEditorPeerConnection()
-    socket?.close(1000, 'controller-stopped')
-    signalingSocketRef.current = null
-    signalingScopeRef.current = null
-    setSignalingScope(null)
-    setSignalingStatus('Session ended')
+  function stopTargetRuntime(runtime: TargetRuntime, notifyPeer: boolean) {
+    if (runtime.stopped) return
+    runtime.stopped = true
+    if (notifyPeer && runtime.scope && runtime.socket.readyState === WebSocket.OPEN) {
+      try { runtime.socket.send(JSON.stringify(scopedClientMessage(runtime.scope, 'session-ended', { reason: 'controller-stopped' }))) } catch { /* socket cleanup continues */ }
+    }
+    closeTargetPeer(runtime)
+    try { runtime.socket.close(1000, 'controller-stopped') } catch { /* socket may still be connecting */ }
+    if (targetRuntimesRef.current.get(runtime.device.id) === runtime) targetRuntimesRef.current.delete(runtime.device.id)
+  }
+  function stopLiveSession(updateUi = true) {
+    const runtimes = [...targetRuntimesRef.current.values()]
+    for (const runtime of runtimes) stopTargetRuntime(runtime, true)
+    targetRuntimesRef.current.clear()
+    if (updateUi) {
+      setTargetStatuses(current => Object.fromEntries(Object.entries(current).map(([id, status]) => [id, { ...status, signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' }])))
+      setLiveSessionActive(false)
+      setLiveSessionStatus('Session ended')
+    }
+  }
+  function startTargetSession(device: Device, liveSourceId: string, accessToken: string, signalingUrl: string) {
+    let socket: WebSocket
+    try { socket = new WebSocket(signalingUrl) } catch { updateTargetStatus(device.id, { signaling: 'error' }); return }
+    const runtime: TargetRuntime = { device, socket, scope: null, peer: null, pendingIceCandidates: [], stopped: false }
+    targetRuntimesRef.current.set(device.id, runtime)
+    socket.addEventListener('open', () => { if (!runtime.stopped) socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'editor', accessToken, wallId: device.wall_id, targetDeviceId: device.id, liveSourceId })) })
+    socket.addEventListener('message', event => { void (async () => {
+      if (typeof event.data !== 'string' || runtime.stopped) return
+      const message = parseServerSignalingMessage(event.data)
+      if (!message) return updateTargetStatus(device.id, { signaling: 'error' })
+      if (message.type === 'authenticated' && message.role === 'editor') {
+        runtime.scope = message
+        updateTargetStatus(device.id, { signaling: 'waiting' })
+      } else if (message.type === 'peer-ready') {
+        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId) return
+        updateTargetStatus(device.id, { signaling: 'connected', peerReady: true })
+        await startEditorPeerConnection(runtime)
+      } else if (message.type === 'answer') {
+        if (!runtime.peer) return
+        await runtime.peer.setRemoteDescription({ type: 'answer', sdp: message.payload.sdp })
+        await flushIceCandidates(runtime.peer, runtime.pendingIceCandidates)
+      } else if (message.type === 'ice-candidate') {
+        const candidate = message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }
+        await addOrQueueIceCandidate(runtime.peer, candidate, runtime.pendingIceCandidates)
+      } else if (message.type === 'session-ended') {
+        if (message.payload.reason === 'player-left') updateTargetStatus(device.id, { signaling: 'waiting', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
+        else {
+          updateTargetStatus(device.id, { signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' })
+          stopTargetRuntime(runtime, false)
+        }
+        closeTargetPeer(runtime)
+      } else if (message.type === 'error') {
+        updateTargetStatus(device.id, { signaling: 'error', connectionState: 'idle', iceConnectionState: 'idle' })
+        stopTargetRuntime(runtime, false)
+      }
+    })().catch(() => { updateTargetStatus(device.id, { signaling: 'error', connectionState: 'failed' }); stopTargetRuntime(runtime, true) }) })
+    socket.addEventListener('error', () => { closeTargetPeer(runtime); updateTargetStatus(device.id, { signaling: 'error' }) })
+    socket.addEventListener('close', () => {
+      closeTargetPeer(runtime)
+      if (targetRuntimesRef.current.get(device.id) === runtime) targetRuntimesRef.current.delete(device.id)
+      if (!runtime.stopped) updateTargetStatus(device.id, { signaling: 'disconnected', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' })
+      if (!targetRuntimesRef.current.size) {
+        setLiveSessionActive(false)
+        if (!runtime.stopped) setLiveSessionStatus('No active target sessions')
+      }
+    })
   }
   async function startLiveSession() {
     if (!supabase || !selected || selected.type !== 'live' || !selected.content.liveSourceId) return
-    const targetId = liveTargetDeviceId || activeDevices.find(device => !selected.target.length || selected.target.includes(device.id))?.id
-    const target = activeDevices.find(device => device.id === targetId && (!selected.target.length || selected.target.includes(device.id)))
+    const targets = activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id))
     const signalingUrl = import.meta.env.VITE_SIGNALING_URL
-    if (!target) return setSignalingStatus('Choose a target player')
-    if (!signalingUrl) return setSignalingStatus('Signaling URL is not configured')
-    if (!cameraStreamRef.current?.getVideoTracks().some(track => track.readyState === 'live')) return setSignalingStatus('Enable camera preview first')
+    if (!targets.length) return setLiveSessionStatus('Select at least one target screen')
+    if (!signalingUrl) return setLiveSessionStatus('Signaling URL is not configured')
+    if (cameraLayerId !== selected.id || !cameraStreamRef.current?.getVideoTracks().some(track => track.readyState === 'live')) return setLiveSessionStatus('Enable camera preview for this layer first')
     const { data, error } = await supabase.auth.getSession()
-    if (error || !data.session?.access_token) return setSignalingStatus('Sign in again to start signaling')
+    if (error || !data.session?.access_token) return setLiveSessionStatus('Sign in again to start signaling')
     stopLiveSession()
-    setSignalingStatus('Signaling connecting')
-    let socket: WebSocket
-    try { socket = new WebSocket(signalingUrl) } catch { setSignalingStatus('Signaling error'); return }
-    signalingSocketRef.current = socket
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'editor', accessToken: data.session!.access_token, wallId: target.wall_id, targetDeviceId: target.id, liveSourceId: selected.content.liveSourceId })))
-    socket.addEventListener('message', (event) => { void (async () => {
-      if (typeof event.data !== 'string') return
-      const message = parseServerSignalingMessage(event.data)
-      if (!message) return setSignalingStatus('Signaling error')
-      if (message.type === 'authenticated' && message.role === 'editor') { signalingScopeRef.current = message; setSignalingScope(message); setSignalingStatus('Waiting for player') }
-      else if (message.type === 'peer-ready') {
-        const scope = signalingScopeRef.current
-        if (!scope || message.sessionId !== scope.sessionId) return
-        await startEditorPeerConnection(scope)
-      }
-      else if (message.type === 'answer') {
-        const peer = peerConnectionRef.current
-        if (!peer) return
-        await peer.setRemoteDescription({ type: 'answer', sdp: message.payload.sdp })
-        await flushIceCandidates(peer, pendingIceCandidatesRef.current)
-      }
-      else if (message.type === 'ice-candidate') await addOrQueueIceCandidate(peerConnectionRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingIceCandidatesRef.current)
-      else if (message.type === 'session-ended') {
-        closeEditorPeerConnection()
-        if (message.payload.reason === 'player-left') setSignalingStatus('Waiting for player')
-        else { signalingScopeRef.current = null; setSignalingScope(null); setSignalingStatus('Session ended') }
-      }
-      else if (message.type === 'error') { closeEditorPeerConnection(); setSignalingStatus('Signaling error') }
-    })().catch(() => { closeEditorPeerConnection(); setSignalingStatus('WebRTC failed') }) })
-    socket.addEventListener('error', () => { closeEditorPeerConnection(); setSignalingStatus('Signaling error') })
-    socket.addEventListener('close', () => { if (signalingSocketRef.current === socket) { closeEditorPeerConnection(); signalingSocketRef.current = null; signalingScopeRef.current = null; setSignalingScope(null); setSignalingStatus('Session ended') } })
+    const statuses = Object.fromEntries(targets.map(device => [device.id, { deviceId: device.id, name: device.name, signaling: 'connecting' as const, peerReady: false, connectionState: 'idle' as const, iceConnectionState: 'idle' as const }]))
+    setTargetStatuses(statuses)
+    setLiveSessionActive(true)
+    setLiveSessionStatus(`Starting ${targets.length} target${targets.length === 1 ? '' : 's'}`)
+    for (const target of targets) startTargetSession(target, selected.content.liveSourceId, data.session.access_token, signalingUrl)
+    if (!targetRuntimesRef.current.size) { setLiveSessionActive(false); setLiveSessionStatus('Signaling error') }
   }
   async function startCamera(requestedCameraId = selectedCameraId) {
     if (!selected || selected.type !== 'live') return
@@ -231,7 +284,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: cameraId } }, audio: false })
       cameraStreamRef.current = stream
-      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamRef.current === stream) { cameraStreamRef.current = null; setCameraStream(null); setCameraLayerId(null); closeEditorPeerConnection(); if (signalingScopeRef.current) stopLiveSession(); setCameraError('Camera is no longer available.'); void listCameras() } } })
+      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamRef.current === stream) { cameraStreamRef.current = null; setCameraStream(null); setCameraLayerId(null); if (targetRuntimesRef.current.size) stopLiveSession(); setCameraError('Camera is no longer available.'); void listCameras() } } })
       setCameraStream(stream)
       setCameraLayerId(selected.id)
       setCameraError('')
@@ -291,7 +344,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
         <section className="inspector-section" aria-label="Source">
           <h2>Source</h2>
           <label>Type<select value={selected.type} disabled={selected.type === 'live'} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option>{selected.type === 'live' && <option value="live">Live input</option>}</select></label>
-          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><label>Target player<select value={liveTargetDeviceId || activeDevices.find(device => !selected.target.length || selected.target.includes(device.id))?.id || ''} onChange={event => setLiveTargetDeviceId(event.target.value)}>{activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)).map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label><button onClick={() => void startLiveSession()}>Start live session</button>{signalingScope && <button className="secondary" onClick={stopLiveSession}>End session</button>}</div><p className="live-camera-message">{signalingStatus}</p></> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
+          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><span>{selectedLiveTargets.length} target{selectedLiveTargets.length === 1 ? '' : 's'} from layer targeting</span><button disabled={!selectedLiveTargets.length} onClick={() => void startLiveSession()}>Start live session</button>{liveSessionActive && <button className="secondary" onClick={() => stopLiveSession()}>End session</button>}</div><small>To change targets while streaming: end the session, save the layer targeting, then start again.</small><p className="live-camera-message">{liveSessionActive ? `${connectedTargetCount}/${Object.keys(targetStatuses).length} targets WebRTC connected` : liveSessionStatus}</p>{Object.values(targetStatuses).map(status => <p className="live-camera-message" key={status.deviceId}><strong>{status.name}</strong> — signaling {status.signaling} · ready {status.peerReady ? 'yes' : 'no'} · WebRTC {status.connectionState} · ICE {status.iceConnectionState}</p>)}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
         </section>
         <section className="inspector-section" aria-label="Fit and display">
           <h2>Fit / Display</h2>

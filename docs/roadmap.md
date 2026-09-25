@@ -30,14 +30,14 @@ These are planned tasks, not claims that future behavior already exists. Each it
 - **LIVE-03:** Enumerate local video devices. Acceptance: the editor can list available cameras after appropriate browser permission and handle unavailable devices.
 - **LIVE-04:** Show local camera preview. Acceptance: the chosen camera previews in the editor and capture tracks stop cleanly when released.
 
-## Phase 5 — WebRTC proof of concept (planned)
+## Phase 5 — WebRTC proof of concept (complete)
 
 - **LIVE-05A:** Add authorized signalling and live-session discovery. Acceptance: the signed-in editor and one token-authenticated paired Pi can join only their short-lived, device-scoped session; discovery uses the existing player poll, realtime messages are isolated and ephemeral, and no video frames enter Supabase or normal state polling.
-- **LIVE-05B:** Send one editor webcam stream to one paired Pi. Acceptance: a single Pi receives live video through one WebRTC peer connection using the LIVE-05A signalling path; the proof remains isolated from full scene integration and records codec/resolution behavior on target Pi hardware.
+- **LIVE-05B:** Send one editor webcam stream to one paired Pi. Complete and verified on physical Pi hardware through the LIVE-05A signalling path.
 
-## Phase 6 — Live wall integration (planned)
+## Phase 6 — Live wall integration (in progress)
 
-- **LIVE-06:** Support multiple Pi peer connections. Acceptance: each participating Pi receives the stream; controller resource limits are measured on the target hardware.
+- **LIVE-06:** Support multiple Pi peer connections. Implemented as one device-scoped session and direct peer connection per targeted Pi, reusing one camera stream; multi-Pi hardware acceptance and controller resource measurements remain.
 - **LIVE-07:** Render live streams through `SceneLayer` placement. Acceptance: live layers obey the existing wall coordinates, device targeting and per-player crop.
 - **LIVE-08:** Handle reconnect, errors and camera disconnect. Acceptance: failures are visible and recovery does not disrupt stored scenes or ordinary player polling.
 

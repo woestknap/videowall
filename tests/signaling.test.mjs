@@ -7,10 +7,12 @@ const WALL_A = '11111111-1111-4111-8111-111111111111'
 const WALL_B = '22222222-2222-4222-8222-222222222222'
 const DEVICE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const DEVICE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const DEVICE_C = 'abababab-abab-4bab-8bab-abababababab'
 const SOURCE_A = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const SOURCE_B = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const TOKEN_A = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const TOKEN_B = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+const TOKEN_C = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd'
 const ACCESS_TOKEN = 'valid-editor-access-token'
 
 function fakeAuth() {
@@ -19,7 +21,7 @@ function fakeAuth() {
     leases,
     async authorizeEditor(input) {
       if (input.accessToken !== ACCESS_TOKEN || input.wallId !== WALL_A) return null
-      const expectedWall = input.targetDeviceId === DEVICE_A ? WALL_A : WALL_B
+      const expectedWall = input.targetDeviceId === DEVICE_A || input.targetDeviceId === DEVICE_C ? WALL_A : WALL_B
       if (expectedWall !== input.wallId) return null
       const scope = { sessionId: input.sessionId, wallId: input.wallId, targetDeviceId: input.targetDeviceId, liveSourceId: input.liveSourceId, controllerUserId: 'user-a', expiresAt: input.expiresAt }
       leases.set(input.sessionId, scope)
@@ -27,7 +29,7 @@ function fakeAuth() {
     },
     async authorizePlayer(input) {
       const lease = leases.get(input.sessionId)
-      const token = input.deviceId === DEVICE_A ? TOKEN_A : input.deviceId === DEVICE_B ? TOKEN_B : null
+      const token = input.deviceId === DEVICE_A ? TOKEN_A : input.deviceId === DEVICE_B ? TOKEN_B : input.deviceId === DEVICE_C ? TOKEN_C : null
       if (!lease || input.deviceToken !== token || input.deviceId !== lease.targetDeviceId) return null
       return { ...lease }
     },
@@ -79,6 +81,21 @@ async function authenticateEditor(open, overrides = {}) {
   const response = nextMessage(socket)
   socket.send(JSON.stringify(editorAuth(overrides)))
   return { socket, authenticated: await response }
+}
+
+async function authenticatePlayer(open, sessionId, overrides = {}) {
+  const socket = await open()
+  const response = nextMessage(socket)
+  socket.send(JSON.stringify(playerAuth(sessionId, overrides)))
+  return { socket, authenticated: await response }
+}
+
+async function waitUntil(predicate, timeout = 1500) {
+  const deadline = Date.now() + timeout
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition timeout')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 }
 
 test('valid editor joins a valid session', () => fixture(async ({ open, service }) => {
@@ -138,13 +155,62 @@ test('wrong wall is rejected', () => fixture(async ({ open, service }) => {
   assert.equal(service.sessions.size, 0)
 }))
 
-test('expired session is rejected', () => fixture(async ({ open, auth }) => {
+test('expired session is cleaned up and rejected', () => fixture(async ({ open, auth, service }) => {
   const { authenticated } = await authenticateEditor(open)
   auth.leases.get(authenticated.sessionId).expiresAt = new Date(0).toISOString()
+  await waitUntil(() => !service.sessions.has(authenticated.sessionId))
+  assert.equal(auth.leases.has(authenticated.sessionId), false)
   const player = await open()
   const response = nextMessage(player)
   player.send(JSON.stringify(playerAuth(authenticated.sessionId)))
   assert.equal((await response).code, 'unauthorized')
+}))
+
+test('two target players use isolated sessions and ending one leaves the other active', () => fixture(async ({ open, service }) => {
+  const { socket: editorA, authenticated: scopeA } = await authenticateEditor(open)
+  const { socket: editorC, authenticated: scopeC } = await authenticateEditor(open, { targetDeviceId: DEVICE_C })
+  const { socket: playerA } = await authenticatePlayer(open, scopeA.sessionId)
+  const { socket: playerC } = await authenticatePlayer(open, scopeC.sessionId, { deviceId: DEVICE_C, deviceToken: TOKEN_C })
+
+  assert.equal(service.sessions.size, 2)
+  assert.ok(service.sessions.get(scopeA.sessionId).player)
+  assert.ok(service.sessions.get(scopeC.sessionId).player)
+  assert.notEqual(service.sessions.get(scopeA.sessionId).player, service.sessions.get(scopeC.sessionId).player)
+
+  let leakedToC = false
+  const onUnexpectedMessage = () => { leakedToC = true }
+  playerC.on('message', onUnexpectedMessage)
+  const offerAtA = nextMessage(playerA)
+  editorA.send(JSON.stringify({ version: 1, type: 'offer', sessionId: scopeA.sessionId, liveSourceId: scopeA.liveSourceId, targetDeviceId: scopeA.targetDeviceId, generation: scopeA.generation, payload: { sdp: 'device-a-only' } }))
+  assert.equal((await offerAtA).payload.sdp, 'device-a-only')
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  playerC.off('message', onUnexpectedMessage)
+  assert.equal(leakedToC, false)
+
+  const endedAtA = nextMessage(playerA)
+  editorA.send(JSON.stringify({ version: 1, type: 'session-ended', sessionId: scopeA.sessionId, liveSourceId: scopeA.liveSourceId, targetDeviceId: scopeA.targetDeviceId, generation: scopeA.generation, payload: { reason: 'controller-stopped' } }))
+  assert.equal((await endedAtA).payload.reason, 'controller-stopped')
+  assert.equal(service.sessions.has(scopeA.sessionId), false)
+  assert.equal(service.sessions.has(scopeC.sessionId), true)
+
+  const offerAtC = nextMessage(playerC)
+  editorC.send(JSON.stringify({ version: 1, type: 'offer', sessionId: scopeC.sessionId, liveSourceId: scopeC.liveSourceId, targetDeviceId: scopeC.targetDeviceId, generation: scopeC.generation, payload: { sdp: 'device-c-still-active' } }))
+  assert.equal((await offerAtC).payload.sdp, 'device-c-still-active')
+}))
+
+test('a duplicate device/source session replaces and cleans up the stale session', () => fixture(async ({ open, service, auth }) => {
+  const first = await authenticateEditor(open)
+  const replacedAtFirst = nextMessage(first.socket)
+  const second = await authenticateEditor(open)
+  const replaced = await replacedAtFirst
+
+  assert.equal(replaced.type, 'session-ended')
+  assert.equal(replaced.payload.reason, 'replaced')
+  assert.equal(service.sessions.size, 1)
+  assert.equal(service.sessions.has(first.authenticated.sessionId), false)
+  assert.equal(service.sessions.has(second.authenticated.sessionId), true)
+  assert.equal(auth.leases.has(first.authenticated.sessionId), false)
+  assert.equal(auth.leases.has(second.authenticated.sessionId), true)
 }))
 
 test('malformed signaling message is rejected', () => fixture(async ({ open }) => {
