@@ -235,12 +235,17 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
         const candidate = message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }
         await addOrQueueIceCandidate(runtime.peer, candidate, runtime.pendingIceCandidates)
       } else if (message.type === 'session-ended') {
-        if (message.payload.reason === 'player-left') updateTargetStatus(device.id, { signaling: 'waiting', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
-        else {
+        if (message.payload.reason === 'player-left') {
+          const retainMediaPeer = runtime.peer?.connectionState === 'connected' || runtime.peer?.connectionState === 'disconnected'
+          if (retainMediaPeer) updateTargetStatus(device.id, { signaling: 'waiting' })
+          else {
+            closeTargetPeer(runtime)
+            updateTargetStatus(device.id, { signaling: 'waiting', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
+          }
+        } else {
           updateTargetStatus(device.id, { signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' })
           stopTargetRuntime(runtime, false)
         }
-        closeTargetPeer(runtime)
       } else if (message.type === 'error') {
         updateTargetStatus(device.id, { signaling: 'error', connectionState: 'idle', iceConnectionState: 'idle' })
         stopTargetRuntime(runtime, false)

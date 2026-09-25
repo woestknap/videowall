@@ -226,11 +226,12 @@ export function Player() {
         if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === activeSession.sessionId) {
           const peer = peerConnectionRef.current
           const peerScope = peerScopeRef.current
-          const preservePeer = peerScope?.sessionId === message.sessionId && (peer?.connectionState === 'connected' || peer?.connectionState === 'disconnected')
+          const samePeerSession = peerScope?.sessionId === message.sessionId && peerScope.liveSourceId === message.liveSourceId && peerScope.targetDeviceId === message.targetDeviceId && peerScope.generation === message.generation
+          const preservePeer = samePeerSession && (peer?.connectionState === 'connected' || (peer?.connectionState === 'disconnected' && disconnectGraceTimerRef.current !== null))
           if (!preservePeer) closePlayerPeerConnection()
           signalingScopeRef.current = message
           setSignalingStatus('connected')
-          socket?.send(JSON.stringify(scopedClientMessage(message as AuthenticatedMessage, 'peer-ready', {})))
+          if (!preservePeer) socket?.send(JSON.stringify(scopedClientMessage(message as AuthenticatedMessage, 'peer-ready', {})))
         } else if (message.type === 'offer' && !safeMode && !videosDisabled) {
           const scope = signalingScopeRef.current
           if (scope && message.sessionId === scope.sessionId) await acceptOffer(scope, message.payload.sdp)
