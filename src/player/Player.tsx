@@ -5,6 +5,8 @@ import { ScenePreview } from '../rendering/ScenePreview'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage, type LiveSessionLease } from '../signalingProtocol'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 
+const WEBRTC_DISCONNECT_GRACE_MS = 5000
+
 export function Player() {
   useEffect(() => {
     let frame = 0
@@ -28,10 +30,14 @@ export function Player() {
   const [wallDevices, setWallDevices] = useState<Device[]>([])
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
   const [liveSession, setLiveSession] = useState<LiveSessionLease | null>(null)
+  const liveSessionRef = useRef<LiveSessionLease | null>(null)
+  liveSessionRef.current = liveSession
   const [signalingStatus, setSignalingStatus] = useState('idle')
   const signalingSocketRef = useRef<WebSocket | null>(null)
   const signalingScopeRef = useRef<AuthenticatedMessage | null>(null)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const peerScopeRef = useRef<AuthenticatedMessage | null>(null)
+  const disconnectGraceTimerRef = useRef<number | null>(null)
   const pendingIceCandidatesRef = useRef<PendingIceCandidate[]>([])
   const [liveStreams, setLiveStreams] = useState<Map<string, MediaStream>>(() => new Map())
   const [webRtcConnectionState, setWebRtcConnectionState] = useState<RTCPeerConnectionState | 'idle'>('idle')
@@ -87,9 +93,16 @@ export function Player() {
     return () => window.clearInterval(timer)
   }, [device])
 
-  function closePlayerPeerConnection(resetState = true) {
+  function clearDisconnectGraceTimer() {
+    if (disconnectGraceTimerRef.current === null) return
+    window.clearTimeout(disconnectGraceTimerRef.current)
+    disconnectGraceTimerRef.current = null
+  }
+  function closePlayerPeerConnection(resetState = true, clearStreams = true) {
+    clearDisconnectGraceTimer()
     const peer = peerConnectionRef.current
     peerConnectionRef.current = null
+    peerScopeRef.current = null
     pendingIceCandidatesRef.current.splice(0)
     if (peer) {
       peer.onicecandidate = null
@@ -98,11 +111,13 @@ export function Player() {
       peer.oniceconnectionstatechange = null
       peer.close()
     }
-    setLiveStreams(current => {
-      for (const stream of current.values()) stream.getTracks().forEach(track => track.stop())
-      return current.size ? new Map() : current
-    })
-    setHasRemoteVideoTrack(false)
+    if (clearStreams) {
+      setLiveStreams(current => {
+        for (const stream of current.values()) stream.getTracks().forEach(track => track.stop())
+        return current.size ? new Map() : current
+      })
+      setHasRemoteVideoTrack(false)
+    }
     if (resetState) { setWebRtcConnectionState('idle'); setIceConnectionState('idle') }
   }
   function sendPlayerWebRtcMessage<T extends 'answer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'answer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) {
@@ -112,10 +127,11 @@ export function Player() {
   }
   function createPlayerPeerConnection(scope: AuthenticatedMessage) {
     const earlyCandidates = pendingIceCandidatesRef.current.splice(0)
-    closePlayerPeerConnection()
+    closePlayerPeerConnection(false, false)
     pendingIceCandidatesRef.current.push(...earlyCandidates)
     const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS))
     peerConnectionRef.current = peer
+    peerScopeRef.current = scope
     setWebRtcConnectionState(peer.connectionState)
     setIceConnectionState(peer.iceConnectionState)
     peer.onicecandidate = event => {
@@ -126,21 +142,38 @@ export function Player() {
     peer.onconnectionstatechange = () => {
       if (peer !== peerConnectionRef.current) return
       setWebRtcConnectionState(peer.connectionState)
-      if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-        const failedState = peer.connectionState
-        closePlayerPeerConnection(false)
-        setWebRtcConnectionState(failedState)
+      if (peer.connectionState === 'connected') {
+        clearDisconnectGraceTimer()
+      } else if (peer.connectionState === 'disconnected' && disconnectGraceTimerRef.current === null) {
+        disconnectGraceTimerRef.current = window.setTimeout(() => {
+          disconnectGraceTimerRef.current = null
+          if (peer !== peerConnectionRef.current || peer.connectionState !== 'disconnected') return
+          const scopeForRetry = signalingScopeRef.current
+          closePlayerPeerConnection()
+          if (scopeForRetry) {
+            try { signalingSocketRef.current?.send(JSON.stringify(scopedClientMessage(scopeForRetry, 'peer-ready', {}))) } catch { setSignalingStatus('error') }
+          }
+        }, WEBRTC_DISCONNECT_GRACE_MS)
+      } else if (peer.connectionState === 'failed') {
+        const scopeForRetry = signalingScopeRef.current
+        closePlayerPeerConnection()
+        if (scopeForRetry) {
+          try { signalingSocketRef.current?.send(JSON.stringify(scopedClientMessage(scopeForRetry, 'peer-ready', {}))) } catch { setSignalingStatus('error') }
+        }
       }
     }
     peer.oniceconnectionstatechange = () => { if (peer === peerConnectionRef.current) setIceConnectionState(peer.iceConnectionState) }
     peer.ontrack = event => {
       if (peer !== peerConnectionRef.current || event.track.kind !== 'video') return
       const stream = event.streams[0] ?? new MediaStream([event.track])
-      setLiveStreams(current => new Map(current).set(scope.liveSourceId, stream))
+      setLiveStreams(current => {
+        const previous = current.get(scope.liveSourceId)
+        if (previous && previous !== stream) previous.getTracks().forEach(track => track.stop())
+        return new Map(current).set(scope.liveSourceId, stream)
+      })
       setHasRemoteVideoTrack(true)
       event.track.onended = () => {
         if (peer !== peerConnectionRef.current) return
-        setLiveStreams(current => { const next = new Map(current); next.delete(scope.liveSourceId); return next })
         setHasRemoteVideoTrack(false)
       }
     }
@@ -166,21 +199,35 @@ export function Player() {
       setSignalingStatus('idle')
       return
     }
+    const activeDevice = device
+    const activeSession = liveSession
     let stopped = false
+    let sessionEnded = false
     let retryTimer = 0
     let socket: WebSocket | null = null
-    const connect = () => {
+    const leaseIsCurrent = () => {
+      const current = liveSessionRef.current
+      return current?.sessionId === activeSession.sessionId && new Date(current.expiresAt).getTime() > Date.now()
+    }
+    const retry = () => {
+      window.clearTimeout(retryTimer)
+      if (!stopped && !sessionEnded && leaseIsCurrent()) retryTimer = window.setTimeout(connect, 4000)
+    }
+    function connect() {
       if (stopped) return
       setSignalingStatus('connecting')
-      try { socket = new WebSocket(liveSession.signalingUrl) } catch { setSignalingStatus('error'); return }
+      try { socket = new WebSocket(activeSession.signalingUrl) } catch { setSignalingStatus('error'); retry(); return }
       signalingSocketRef.current = socket
-      socket.addEventListener('open', () => socket?.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId: device.id, deviceToken: device.token, sessionId: liveSession.sessionId })))
+      socket.addEventListener('open', () => socket?.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId: activeDevice.id, deviceToken: activeDevice.token, sessionId: activeSession.sessionId })))
       socket.addEventListener('message', (event) => { void (async () => {
         if (typeof event.data !== 'string') return
         const message = parseServerSignalingMessage(event.data)
         if (!message) return setSignalingStatus('error')
-        if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === liveSession.sessionId) {
-          closePlayerPeerConnection()
+        if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === activeSession.sessionId) {
+          const peer = peerConnectionRef.current
+          const peerScope = peerScopeRef.current
+          const preservePeer = peerScope?.sessionId === message.sessionId && (peer?.connectionState === 'connected' || peer?.connectionState === 'disconnected')
+          if (!preservePeer) closePlayerPeerConnection()
           signalingScopeRef.current = message
           setSignalingStatus('connected')
           socket?.send(JSON.stringify(scopedClientMessage(message as AuthenticatedMessage, 'peer-ready', {})))
@@ -188,14 +235,17 @@ export function Player() {
           const scope = signalingScopeRef.current
           if (scope && message.sessionId === scope.sessionId) await acceptOffer(scope, message.payload.sdp)
         } else if (message.type === 'ice-candidate' && !safeMode && !videosDisabled) await addOrQueueIceCandidate(peerConnectionRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingIceCandidatesRef.current)
-        else if (message.type === 'session-ended') { closePlayerPeerConnection(); signalingScopeRef.current = null; setSignalingStatus('ended') }
+        else if (message.type === 'session-ended') { sessionEnded = true; closePlayerPeerConnection(); signalingScopeRef.current = null; setSignalingStatus('ended') }
         else if (message.type === 'error') { closePlayerPeerConnection(); setSignalingStatus('error') }
       })().catch(() => { closePlayerPeerConnection(false); setWebRtcConnectionState('failed') }) })
       socket.addEventListener('close', () => {
-        closePlayerPeerConnection()
+        const peer = peerConnectionRef.current
+        const retainMediaPeer = leaseIsCurrent() && (peer?.connectionState === 'connected' || peer?.connectionState === 'disconnected')
+        if (!retainMediaPeer) closePlayerPeerConnection()
         signalingScopeRef.current = null
         if (signalingSocketRef.current === socket) signalingSocketRef.current = null
-        if (!stopped) retryTimer = window.setTimeout(connect, 4000)
+        if (!stopped && !sessionEnded) setSignalingStatus('disconnected')
+        retry()
       })
       socket.addEventListener('error', () => setSignalingStatus('error'))
     }

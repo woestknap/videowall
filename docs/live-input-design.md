@@ -125,6 +125,7 @@ Suggested initial values are a 60-second negotiation deadline, a 45-second renew
 
 - **Editor reload/disconnect:** keep the discovery lease only for the grace period. If the editor returns and reauthorizes, increment `generation` and create a fresh peer connection. Otherwise end the session and remove/expire the announcement.
 - **Player reload/disconnect:** its normal poll rediscovers an unexpired announcement. On `ready`, increment the generation and renegotiate from a new offer. Never reuse old SDP or candidates.
+- **Transient player media disconnect:** keep the peer and mapped `MediaStream` for a five-second grace period while exposing the browser's real WebRTC and ICE states. Cancel teardown if the peer reconnects; otherwise close it and request a fresh negotiation. A signalling-socket reconnect does not by itself discard an already connected media peer or blank its live layer.
 - **Camera stopped or removed:** editor sends `end`, closes the sender and its tracks, and clears the lease. The saved live layer/source remains unchanged.
 - **Signalling service restart:** sockets disappear and in-memory negotiations are lost. Participants reconnect and renegotiate while the discovery lease is valid; no persistent candidate replay is required.
 - **Duplicate session:** allow at most one active controller session per `(liveSourceId, targetDeviceId)` for V1. A new authorized session explicitly ends the old one.
