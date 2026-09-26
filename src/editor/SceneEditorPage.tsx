@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, type WheelEvent } from 'react'
 import { ScreenLayoutControls } from '../ScreenLayoutControls'
-import { fitEditorView, panForCursorZoom } from '../lib/editorZoom'
+import { advanceWorkspaceDrag, deltaClientToWorkspace, devicePositionChange, displayedZoomPercent, fitEditorView, nudgeDevicePosition, stageGeometryFromRect, startWorkspaceDrag, workspaceRectToClientRect, zoomAroundCursor, zoomFromWheel, type ClientRect, type DeviceNudgeKey, type EditorView, type Point, type StageGeometry, type WorkspaceDrag, type WorkspaceRect } from '../lib/editorZoom'
 import { supabase } from '../lib/supabase'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { recoveryDelayMs } from '../lib/recovery'
@@ -67,19 +67,25 @@ type TargetRuntime = {
   disconnectGraceTimer: number | null
 }
 
+type DragMotion = { id: string; deviceId?: string; x: number; y: number; lastClient: Point }
+type DeviceDrag = { id: string; pointerId: number; origin: WorkspaceDrag }
+
 export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [scene, setScene] = useState<Scene | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
   const [selectedId, setSelectedId] = useState<string>('')
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [notice, setNotice] = useState('')
-  const [drag, setDrag] = useState<{ id: string; offsetX: number; offsetY: number; deviceId?: string } | null>(null)
-  const [deviceDrag, setDeviceDrag] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null)
+  const dragRef = useRef<DragMotion | null>(null)
+  const deviceDragRef = useRef<DeviceDrag | null>(null)
   const [layoutDirty, setLayoutDirty] = useState(false)
   const [devicesLoaded, setDevicesLoaded] = useState(false)
   const stageRef = useRef<HTMLDivElement>(null)
+  const [overlayStage, setOverlayStage] = useState<StageGeometry | null>(null)
   const initialFitSceneRef = useRef<string | null>(null)
-  const [zoom, setZoom] = useState(1)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [view, setView] = useState<EditorView>({ zoom: 1, pan: { x: 0, y: 0 } })
+  const [fitZoom, setFitZoom] = useState(1)
+  const { zoom, pan } = view
   const [panDrag, setPanDrag] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([])
@@ -93,8 +99,54 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [targetStatuses, setTargetStatuses] = useState<Record<string, TargetStatus>>({})
   const targetRuntimesRef = useRef<Map<string, TargetRuntime>>(new Map())
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
-  useEffect(() => { if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => { if (error) { setNotice(error.message); return }; setDevices(data ?? []); setDevicesLoaded(true) }) }, [])
+  useEffect(() => {
+    let cancelled = false
+    if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => {
+      if (cancelled) return
+      if (error) { setNotice(error.message); return }
+      setDevices(data ?? [])
+      setDevicesLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [])
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
+  useEffect(() => {
+    const nudge = (event: KeyboardEvent) => {
+      if (!selectedDeviceId || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+      const target = event.target
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, button, a, [contenteditable="true"]')) return
+      event.preventDefault()
+      setDevices(items => items.map(item => {
+        if (item.id !== selectedDeviceId) return item
+        const position = nudgeDevicePosition({ x: item.layout_x ?? 0, y: item.layout_y ?? 0 }, event.key as DeviceNudgeKey, event.shiftKey)
+        return { ...item, ...devicePositionChange(position) }
+      }))
+      setLayoutDirty(true)
+    }
+    window.addEventListener('keydown', nudge)
+    return () => window.removeEventListener('keydown', nudge)
+  }, [selectedDeviceId])
+  useEffect(() => {
+    const stage = stageRef.current
+    const workspace = stage?.parentElement
+    if (!stage || !workspace) return
+    const measure = () => {
+      const next = {
+        center: { x: stage.offsetLeft + stage.offsetWidth / 2, y: stage.offsetTop + stage.offsetHeight / 2 },
+        width: stage.offsetWidth,
+        height: stage.offsetHeight,
+      }
+      setOverlayStage(previous => previous
+        && previous.center.x === next.center.x && previous.center.y === next.center.y
+        && previous.width === next.width && previous.height === next.height
+        ? previous : next)
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(workspace)
+    observer.observe(stage)
+    measure()
+    return () => observer.disconnect()
+  }, [scene?.id, devicesLoaded])
   useEffect(() => () => { cameraStreamRef.current?.getTracks().forEach(track => track.stop()) }, [])
   useEffect(() => () => stopLiveSession(false), [])
   useEffect(() => {
@@ -110,10 +162,10 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       if (!stage) return
       const controls = workspace.querySelector<HTMLElement>('.canvas-controls')
       const hint = workspace.querySelector<HTMLElement>('.canvas-hint')
-      const view = fitEditorView({ bounds: bounds(active.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } })
-      if (!view) return
-      setZoom(view.zoom)
-      setPan(view.pan)
+      const fitted = fitEditorView({ bounds: bounds(active.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } })
+      if (!fitted) return
+      setView(fitted)
+      setFitZoom(fitted.zoom)
       initialFitSceneRef.current = scene.id
       observer.disconnect()
     }
@@ -346,18 +398,97 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   async function save() { if (!supabase) return; const { error } = await supabase.from('scenes').update({ name: currentScene.name, layers: currentScene.layers, duration_seconds: currentScene.duration_seconds, device_ids: currentScene.device_ids ?? [] }).eq('id', currentScene.id); setNotice(error ? error.message : 'Scene saved. Publish it from the dashboard when ready.') }
   async function saveLayout() { if (!supabase) return; const client = supabase; const results = await Promise.all(devices.map(({ id, name, layout_x, layout_y, layout_width, layout_height, auto_size }) => client.from('devices').update({ name, layout_x, layout_y, auto_size, ...(auto_size === false ? { layout_width, layout_height } : {}) }).eq('id', id))); const error = results.find((result) => result.error)?.error; if (error) return setNotice(error.message); setLayoutDirty(false); setNotice('Physical screen layout saved.') }
   async function upload(file: File) { if (!supabase || !selected) return; setNotice('Uploading media…'); const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-80); const path = `${currentScene.id}/${crypto.randomUUID()}-${safeName}`; const { error } = await supabase.storage.from('media').upload(path, file, { cacheControl: '31536000', upsert: false }); if (error) return setNotice(error.message); const { data } = supabase.storage.from('media').getPublicUrl(path); updateLayer(selected.id, { content: { ...selected.content, url: data.publicUrl } }); setNotice('Uploaded. Save the scene to keep this layer.') }
-  function startDrag(event: PointerEvent<HTMLDivElement>, layer: SceneLayer, device?: Device) { if (spaceHeld) return; const box = event.currentTarget.closest('.editor-stage')!.getBoundingClientRect(); const pointX = ((event.clientX - box.left) / box.width) * 100, pointY = ((event.clientY - box.top) / box.height) * 100; const screenLeft = device ? ((device.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100 : 0, screenTop = device ? ((device.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100 : 0, screenWidth = device ? ((device.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100 : 100, screenHeight = device ? ((device.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100 : 100; setSelectedId(layer.id); setDrag({ id: layer.id, deviceId: device?.id, offsetX: (pointX - screenLeft) / screenWidth * 100 - layer.x, offsetY: (pointY - screenTop) / screenHeight * 100 - layer.y }); event.currentTarget.setPointerCapture(event.pointerId) }
-  function dragLayer(event: PointerEvent<HTMLDivElement>) { if (!drag) return; const box = event.currentTarget.getBoundingClientRect(), device = devices.find((item) => item.id === drag.deviceId), pointX = ((event.clientX - box.left) / box.width) * 100, pointY = ((event.clientY - box.top) / box.height) * 100; const left = device ? ((device.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100 : 0, top = device ? ((device.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100 : 0, width = device ? ((device.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100 : 100, height = device ? ((device.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100 : 100; updateLayer(drag.id, { x: (pointX - left) / width * 100 - drag.offsetX, y: (pointY - top) / height * 100 - drag.offsetY }) }
-  function startDeviceDrag(event: PointerEvent<HTMLSpanElement>, device: Device) { if (spaceHeld) return; const box = event.currentTarget.parentElement!.parentElement!.getBoundingClientRect(); setDeviceDrag({ id: device.id, offsetX: ((event.clientX - box.left) / box.width) * WALL_WORKSPACE_WIDTH - (device.layout_x ?? 0), offsetY: ((event.clientY - box.top) / box.height) * WALL_WORKSPACE_HEIGHT - (device.layout_y ?? 0) }); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); event.stopPropagation() }
-  function dragDevice(event: PointerEvent<HTMLDivElement>) { if (!deviceDrag) return; const box = event.currentTarget.getBoundingClientRect(); updateDeviceLayout(deviceDrag.id, { layout_x: ((event.clientX - box.left) / box.width) * WALL_WORKSPACE_WIDTH - deviceDrag.offsetX, layout_y: ((event.clientY - box.top) / box.height) * WALL_WORKSPACE_HEIGHT - deviceDrag.offsetY }) }
+  const wallSize = { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT }
+  function stageGeometry() {
+    const stage = stageRef.current
+    return stage ? stageGeometryFromRect(stage.getBoundingClientRect(), view) : null
+  }
+  function dragDelta(event: PointerEvent<HTMLDivElement>, motion: DragMotion) {
+    const geometry = stageGeometry()
+    if (!geometry) return null
+    const sensitivity = event.shiftKey ? .1 : 1
+    const delta = deltaClientToWorkspace({ x: (event.clientX - motion.lastClient.x) * sensitivity, y: (event.clientY - motion.lastClient.y) * sensitivity }, zoom, geometry, wallSize)
+    motion.lastClient = { x: event.clientX, y: event.clientY }
+    return delta
+  }
+  function startDrag(event: PointerEvent<HTMLDivElement>, layer: SceneLayer, device?: Device) {
+    if (spaceHeld || event.button !== 0) return
+    setSelectedId(layer.id)
+    setSelectedDeviceId('')
+    dragRef.current = { id: layer.id, deviceId: device?.id, x: layer.x, y: layer.y, lastClient: { x: event.clientX, y: event.clientY } }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  function dragLayer(event: PointerEvent<HTMLDivElement>) {
+    const motion = dragRef.current
+    if (!motion) return
+    const delta = dragDelta(event, motion)
+    if (!delta) return
+    const target = motion.deviceId ? devices.find(item => item.id === motion.deviceId) : null
+    if (motion.deviceId && !target) return
+    const reference = target ? deviceRect(target) : { x: 0, y: 0, ...wallSize }
+    motion.x += delta.x / reference.width * 100
+    motion.y += delta.y / reference.height * 100
+    updateLayer(motion.id, { x: motion.x, y: motion.y })
+  }
+  function startDeviceDrag(event: PointerEvent<HTMLSpanElement>, device: Device) {
+    if (spaceHeld || event.button !== 0) return
+    const geometry = stageGeometry()
+    if (!geometry) return
+    setSelectedDeviceId(device.id)
+    event.currentTarget.focus()
+    deviceDragRef.current = {
+      id: device.id,
+      pointerId: event.pointerId,
+      origin: startWorkspaceDrag(
+        { x: event.clientX, y: event.clientY },
+        { x: device.layout_x ?? 0, y: device.layout_y ?? 0 },
+        zoom,
+        geometry,
+        wallSize,
+      ),
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  function dragDevice(event: PointerEvent<HTMLDivElement>) {
+    const motion = deviceDragRef.current
+    if (!motion || motion.pointerId !== event.pointerId) return
+    const next = advanceWorkspaceDrag(motion.origin, { x: event.clientX, y: event.clientY }, event.shiftKey)
+    motion.origin = next.drag
+    updateDeviceLayout(motion.id, devicePositionChange(next.position))
+  }
   function startPan(event: PointerEvent<HTMLDivElement>) { if (event.button !== 1 && !spaceHeld) return; setPanDrag({ x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault() }
-  function movePan(event: PointerEvent<HTMLDivElement>) { if (panDrag) setPan({ x: panDrag.panX + event.clientX - panDrag.x, y: panDrag.panY + event.clientY - panDrag.y }) }
-  function zoomCanvas(event: WheelEvent<HTMLElement>) { event.preventDefault(); const nextZoom = Math.max(.2, Math.min(128, Number((zoom * (event.deltaY < 0 ? 1.18 : .85)).toFixed(3)))), stage = stageRef.current; if (stage && nextZoom !== zoom) setPan(current => panForCursorZoom({ pan: current, zoom, nextZoom, stage: stage.getBoundingClientRect(), cursor: { x: event.clientX, y: event.clientY } })); setZoom(nextZoom) }
-  function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || !activeDevices.length) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const view = fitEditorView({ bounds: bounds(activeDevices.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } }); if (!view) return; setZoom(view.zoom); setPan(view.pan) }
+  function movePan(event: PointerEvent<HTMLDivElement>) { if (panDrag) setView(current => ({ ...current, pan: { x: panDrag.panX + event.clientX - panDrag.x, y: panDrag.panY + event.clientY - panDrag.y } })) }
+  function zoomAt(cursor: Point, next: (zoom: number) => number) {
+    const geometry = stageGeometry()
+    if (geometry) setView(current => zoomAroundCursor(current, next(current.zoom), geometry, cursor, wallSize))
+  }
+  function zoomCanvas(event: WheelEvent<HTMLElement>) {
+    if (event.target instanceof Element && event.target.closest('.canvas-controls')) return
+    event.preventDefault()
+    const { clientX, clientY, deltaY, deltaMode } = event
+    const pageHeight = event.currentTarget.clientHeight
+    zoomAt({ x: clientX, y: clientY }, current => zoomFromWheel(current, deltaY, deltaMode, pageHeight))
+  }
+  function zoomButton(factor: number) {
+    const geometry = stageGeometry()
+    if (geometry) zoomAt(geometry.center, current => current * factor)
+  }
+  function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || !activeDevices.length) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const fitted = fitEditorView({ bounds: bounds(activeDevices.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: wallSize }); if (fitted) { setView(fitted); setFitZoom(fitted.zoom) } }
   function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) { if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return; const layer = currentScene.layers.find((item) => item.id === layerId); if (!layer || (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight)) return; const target = devices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))), screenSpace = (layer.space ?? 'screen') === 'screen', referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH, referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT; updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 }) }
   function updateDimension(key: 'width' | 'height', value: number) { if (!selected) return; const change: Partial<SceneLayer> = { [key]: value }; if (selected.lockedAspect && selected.aspectRatio) { const target = activeDevices.find(item => !selected.target.length || selected.target.includes(item.id)), reference = layerReference(selected, currentScene, devices, target); if (key === 'width') change.height = value * (reference.width / reference.height) / selected.aspectRatio; else change.width = value * selected.aspectRatio / (reference.width / reference.height) }; updateLayer(selected.id, change) }
   const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} liveStream={cameraStream} liveLayerId={cameraLayerId} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
-  const rectStyle = (item: Device) => ({ left: `${((item.layout_x ?? 0) / WALL_WORKSPACE_WIDTH) * 100}%`, top: `${((item.layout_y ?? 0) / WALL_WORKSPACE_HEIGHT) * 100}%`, width: `${((item.layout_width ?? 1) / WALL_WORKSPACE_WIDTH) * 100}%`, height: `${((item.layout_height ?? 1) / WALL_WORKSPACE_HEIGHT) * 100}%` })
+  const rectStyle = (item: Device) => { const rect = deviceRect(item); return { left: `${rect.x / WALL_WORKSPACE_WIDTH * 100}%`, top: `${rect.y / WALL_WORKSPACE_HEIGHT * 100}%`, width: `${rect.width / WALL_WORKSPACE_WIDTH * 100}%`, height: `${rect.height / WALL_WORKSPACE_HEIGHT * 100}%` } }
+  const clientGuideStyle = (rect: ClientRect, rotation = 0): CSSProperties => ({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, transform: rotation ? `rotate(${rotation}deg)` : undefined })
+  const scaleRectFromCenter = (rect: WorkspaceRect, scale: number): WorkspaceRect => ({ x: rect.x + rect.width * (1 - scale) / 2, y: rect.y + rect.height * (1 - scale) / 2, width: rect.width * scale, height: rect.height * scale })
+  const selectedLayerGuides = selected ? ((selected.space ?? 'screen') === 'screen'
+    ? activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)).map(device => {
+      const clip = deviceRect(device)
+      const rect = scaleRectFromCenter({ x: clip.x + selected.x / 100 * clip.width, y: clip.y + selected.y / 100 * clip.height, width: selected.width / 100 * clip.width, height: selected.height / 100 * clip.height }, selected.scale ?? 1)
+      return { key: `${selected.id}-${device.id}`, rect, clip, rotation: selected.rotation ?? 0 }
+    })
+    : [{ key: selected.id, rect: scaleRectFromCenter({ x: selected.x / 100 * wallSize.width, y: selected.y / 100 * wallSize.height, width: selected.width / 100 * wallSize.width, height: selected.height / 100 * wallSize.height }, selected.scale ?? 1), clip: null, rotation: selected.rotation ?? 0 }]) : []
   return <main className="editor-page"><header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><div className="editor-actions"><button className="secondary" disabled={!layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header><div className="editor-layout">
     <aside className="editor-toolbar">
       <section className="editor-sidebar-group">
@@ -378,7 +509,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       </section>
       {selected && <section className="editor-sidebar-group editor-layer-settings"><p className="eyebrow">LAYER DISPLAY</p><div className="wall-layer-controls"><label>Layer canvas<select value={selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}><option value="screen">One copy on each selected display</option><option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span>{devices.map((item) => <label key={item.id} className={!isSceneDevice(item.id) ? 'disabled-target' : ''}><input type="checkbox" disabled={!isSceneDevice(item.id)} checked={isSceneDevice(item.id) && (!selected.target.length || selected.target.includes(item.id))} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div></div></section>}
     </aside>
-    <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => setZoom((current) => Math.max(.2, current - .2))}>−</button><span>{Math.round(zoom * 100)}%</span><button className="secondary" onClick={() => setZoom((current) => Math.min(128, current + .2))}>+</button><button className="secondary" onClick={fitScreens}>Fit screens</button><button className="secondary" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}>Reset</button></div><div ref={stageRef} className={`editor-stage media-workspace ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, '--guide-inset': `${(1 - zoom) * 50}%`, '--guide-size': `${zoom * 100}%`, '--guide-scale': 1 / zoom } as CSSProperties} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }} onPointerCancel={() => { setDrag(null); setDeviceDrag(null); setPanDrag(null) }}>{currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? devices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ ...rectStyle(item), zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{editorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'}`} key={item.id} style={rectStyle(item)}><span style={{ transform: `scale(${1 / zoom})` }} onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div><p className="canvas-hint">Scroll to zoom · hold Space and drag, or use middle mouse, to pan.</p></section>
+    <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => zoomButton(1 / 1.1)}>−</button><span>{Math.round(displayedZoomPercent(zoom, fitZoom))}%</span><button className="secondary" onClick={() => zoomButton(1.1)}>+</button><button className="secondary" onClick={fitScreens}>Fit screens</button><button className="secondary" onClick={() => setView({ zoom: 1, pan: { x: 0, y: 0 } })}>Reset</button></div><div ref={stageRef} className={`editor-stage media-workspace ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { dragRef.current = null; deviceDragRef.current = null; setPanDrag(null) }} onPointerCancel={() => { dragRef.current = null; deviceDragRef.current = null; setPanDrag(null) }}>{currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? devices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ ...rectStyle(item), zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{editorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'} ${item.id === selectedDeviceId ? 'selected-device' : ''}`} key={item.id} style={rectStyle(item)}><span tabIndex={0} role="button" aria-label={`Select and move ${item.name}`} style={{ transform: `scale(${1 / zoom})` }} onFocus={() => setSelectedDeviceId(item.id)} onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div>{overlayStage && <div className="editor-guide-overlay"><div className="workspace-screen-guide" style={clientGuideStyle(workspaceRectToClientRect({ x: 0, y: 0, ...wallSize }, view, overlayStage, wallSize))} />{activeDevices.map(device => <div key={device.id} className={`device-screen-guide ${device.id === selectedDeviceId ? 'selected-device-guide' : ''}`} style={clientGuideStyle(workspaceRectToClientRect(deviceRect(device), view, overlayStage, wallSize))} />)}{selectedLayerGuides.map(guide => { const rect = workspaceRectToClientRect(guide.rect, view, overlayStage, wallSize); if (!guide.clip) return <div key={guide.key} className="layer-screen-guide" style={clientGuideStyle(rect, guide.rotation)} />; const clip = workspaceRectToClientRect(guide.clip, view, overlayStage, wallSize); return <div key={guide.key} className="layer-screen-guide-clip" style={clientGuideStyle(clip)}><div className="layer-screen-guide" style={clientGuideStyle({ left: rect.left - clip.left, top: rect.top - clip.top, width: rect.width, height: rect.height }, guide.rotation)} /></div> })}</div>}<p className="canvas-hint">Scroll to zoom · Space or middle drag to pan · Arrow keys move a selected screen by 1 unit · Shift uses 0.1.</p></section>
     <aside className="inspector">
       <p className="eyebrow">{selected ? 'MEDIA LAYER' : 'INSPECTOR'}</p>
       {selected ? <>

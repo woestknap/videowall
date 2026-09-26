@@ -10,7 +10,7 @@
     "signaling": "node --env-file-if-exists=.env server/signaling/index.js",
     "test:signaling": "node --test tests/signaling.test.mjs",
     "test:recovery": "node --experimental-strip-types --test tests/recovery.test.mjs",
-    "test:geometry": "node --test tests/wallGeometry.test.mjs",
+    "test:geometry": "node --test tests/wallGeometry.test.mjs tests/editorZoom.test.mjs tests/editorGuideCss.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
