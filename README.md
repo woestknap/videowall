@@ -19,6 +19,10 @@ Run Chromium at `https://YOUR-DOMAIN/?player=1` in kiosk mode. Use a Pi 3 for 10
 
 The player first shows a PIN form. Pair it once, then its local device token is retained and it reconnects automatically.
 
+## Signaling deployment
+
+Local live-input development can use a directly reachable `ws://` laptop address. Production uses a stable `wss://` hostname through a Cloudflare named tunnel while WebRTC media continues directly between the editor and each Pi. See [production signaling deployment](docs/production-signaling.md) for environment separation, startup order, Pages configuration, security boundaries and troubleshooting.
+
 ## Screen alignment and mixed sizes
 
 See [display calibration](docs/display-calibration.md) for the 150 × 85 mm Pi panels,

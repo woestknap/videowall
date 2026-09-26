@@ -28,3 +28,5 @@ The dashboard's selected wall/scene, editor selection, unsaved edits, zoom/pan, 
 2. **Scene:** create on the dashboard from starter layers; open `?editor=<id>`; change scene, layers and optionally device layout; save scene and screen layout with separate actions. Publish/Go live from the dashboard updates `wall_state`. The next player poll receives the published scene. The editor's duration field is persisted, but the current dashboard publishes manually; this file does not imply an implemented cycle scheduler.
 
 See [rendering model](rendering-model.md) for coordinate details and [kiosk guide](raspberry-pi-kiosk.md) for OS-level recovery.
+
+Live input uses the dedicated authenticated WSS service described in [live input design](live-input-design.md). In production, a Cloudflare named tunnel exposes that signaling service at a stable hostname; it carries signaling only, while WebRTC media travels directly between the editor and each Pi. Deployment and environment ownership are documented in [production signaling deployment](production-signaling.md).
