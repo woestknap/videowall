@@ -3,7 +3,10 @@ import { isConfigured, supabase } from '../lib/supabase'
 import { bounds, deviceRect } from '../lib/wallGeometry'
 import { ScenePreview } from '../rendering/ScenePreview'
 import type { Device, Scene, SceneLayer, Wall } from '../types'
-import { R2UploadTestPanel } from './R2UploadTestPanel'
+import { MediaLibrary } from '../media/MediaLibrary'
+import { v2SceneCreateValues, virtualGeometryForWall } from '../lib/editorSceneGeometry'
+import { physicalDeviceSaveValues, resetPhysicalPositions } from '../lib/physicalWallLayout'
+import { PhysicalWallEditor } from './PhysicalWallEditor'
 
 const starterScene: Scene = {
   id: 'preview', name: 'Welcome', duration_seconds: 60,
@@ -55,15 +58,17 @@ export function Admin() {
   const [selectedSceneId, setSelectedSceneId] = useState<string>('')
   const [pin, setPin] = useState<string>('')
   const [notice, setNotice] = useState('')
+  const [physicalLayoutDirty, setPhysicalLayoutDirty] = useState(false)
   const activeScene = scenes.find((scene) => scene.id === selectedSceneId) ?? scenes[0] ?? starterScene
   const selectedWall = walls.find((wall) => wall.id === activeWall)
+  const selectedVirtualGeometry = selectedWall ? virtualGeometryForWall(selectedWall, devices) : null
 
   useEffect(() => {
     if (!supabase) return
     void (async () => {
       const [{ data: wallData }, { data: sceneData }] = await Promise.all([
-        supabase.from('walls').select('id,name').order('created_at'),
-        supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').order('created_at'),
+        supabase.from('walls').select('id,name,layout_mode,virtual_pixels_per_mm').order('created_at'),
+        supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids,wall_id,geometry_version,canvas_width_px,canvas_height_px,wall_geometry_revision').order('created_at'),
       ])
       setWalls(wallData ?? [])
       setScenes((sceneData ?? []).map((scene) => ({ ...scene, layers: scene.layers as SceneLayer[] })))
@@ -73,7 +78,7 @@ export function Admin() {
   }, [])
   useEffect(() => {
     if (!supabase || !activeWall) return
-    void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').eq('wall_id', activeWall).order('created_at').then(({ data }) => setDevices(data ?? []))
+    void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size,included_in_wall').eq('wall_id', activeWall).order('created_at').then(({ data }) => { setDevices(data ?? []); setPhysicalLayoutDirty(false) })
   }, [activeWall])
   async function createWall() {
     const name = prompt('Wall name', 'Living room wall')?.trim()
@@ -105,15 +110,47 @@ export function Admin() {
   }
   async function publish(scene: Scene) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
+    if (scene.geometry_version === 2 && scene.wall_id !== activeWall) return setNotice('This virtual-pixel scene belongs to a different wall.')
     const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
     setNotice(error ? error.message : `${scene.name} is live.`)
   }
-  async function createScene() {
+  function updatePhysicalDevice(deviceId: string, change: Partial<Device>) {
+    setDevices(current => current.map(device => device.id === deviceId ? { ...device, ...change, auto_size: false } : device))
+    setPhysicalLayoutDirty(true)
+  }
+  function resetPhysicalLayout() {
+    if (!confirm('Reset physical screen positions to a simple horizontal arrangement? Width and height measurements, viewport resolution, scenes and media will not change.')) return
+    setDevices(current => resetPhysicalPositions(current))
+    setPhysicalLayoutDirty(true)
+    setNotice('Physical positions reset locally. Review the measurements, then save the physical layout.')
+  }
+  async function savePhysicalLayout() {
+    if (!supabase || selectedWall?.layout_mode !== 'physical') return
+    const database = supabase
+    const values = devices.map(device => ({ device, values: physicalDeviceSaveValues(device) }))
+    if (values.some(item => !item.values)) return setNotice('Every physical screen needs finite X, Y, Width and Height values; dimensions must be greater than zero.')
+    const results = await Promise.all(values.map(({ device, values: update }) => database.from('devices').update(update!).eq('id', device.id)))
+    const error = results.find(result => result.error)?.error
+    if (error) return setNotice(error.message)
+    setPhysicalLayoutDirty(false)
+    setDevices(current => current.map(device => ({ ...device, auto_size: false })))
+    setNotice('Physical wall calibration saved. Existing V2 scenes keep their saved canvas and may show a revision warning.')
+  }
+  async function createScene(geometryVersion: 1 | 2) {
     if (!supabase) return
     const name = prompt('Scene name', 'New scene')?.trim()
     if (!name) return
-    const { data, error } = await supabase.from('scenes').insert({ name, layers: starterScene.layers, duration_seconds: 60, device_ids: [] }).select('id,name,layers,duration_seconds,device_ids').single()
+    const fields = 'id,name,layers,duration_seconds,device_ids,wall_id,geometry_version,canvas_width_px,canvas_height_px,wall_geometry_revision'
+    const result = geometryVersion === 1
+      ? await supabase.from('scenes').insert({ name, layers: starterScene.layers, duration_seconds: 60, device_ids: [], wall_id: activeWall || null, geometry_version: 1 }).select(fields).single()
+      : await (async () => {
+        const values = v2SceneCreateValues(name, selectedWall, devices)
+        if (values.status === 'invalid') return { data: null, error: { message: values.reason } }
+        return supabase.from('scenes').insert(values.values).select(fields).single()
+      })()
+    const { data, error } = result
     if (error) return setNotice(error.message)
+    if (!data) return setNotice('Scene creation failed.')
     const newScene = { ...data, layers: data.layers as SceneLayer[] }
     setScenes((existing) => [...existing, newScene]); setSelectedSceneId(newScene.id)
   }
@@ -136,10 +173,10 @@ export function Admin() {
     </section>
     {notice && <p className="notice">{notice}</p>}
     <section className="dashboard-grid">
-      <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} /></article>
-      <article className="panel dashboard-screens-panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>{devices.length ? <><WallLayoutOverview devices={devices} /><div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
-      <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
-      <R2UploadTestPanel />
+      <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} /></article>
+      <article className={`panel dashboard-screens-panel ${selectedWall?.layout_mode === 'physical' ? 'physical-layout-panel' : ''}`}><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>{selectedWall?.layout_mode === 'physical' ? 'Physical wall calibration' : 'Layout'}</h2></div><span>{devices.length} screens</span></div>{devices.length ? <>{selectedWall?.layout_mode === 'physical' ? <PhysicalWallEditor wall={selectedWall} devices={devices} geometry={selectedVirtualGeometry} dirty={physicalLayoutDirty} onChange={updatePhysicalDevice} onReset={resetPhysicalLayout} onSave={() => void savePhysicalLayout()} /> : <WallLayoutOverview devices={devices} />}<div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
+      <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><div className="scene-create-actions"><button className="secondary" onClick={() => void createScene(1)}>+ Legacy scene</button><button className="secondary" disabled={!activeWall} onClick={() => void createScene(2)}>+ Virtual-pixel scene</button></div></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s · V{scene.geometry_version ?? 1}</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
+      <MediaLibrary mode="manage" />
     </section>
   </main>
 }

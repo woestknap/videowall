@@ -10,7 +10,7 @@ The reusable media library separates metadata from playback files:
 - The browser uploads the file directly to R2 with the presigned PUT URL. R2 credentials remain server-side and are never compiled into the browser bundle.
 - Pi players read stable public URLs under `R2_PUBLIC_BASE_URL`; signed GET URLs are not used.
 
-The current editor upload UI still uses the existing public Supabase Storage `media` bucket. Existing scenes containing only `SceneLayer.content.url` remain valid. A later media-library UI phase can request an R2 upload URL, upload directly, insert `media_assets` metadata through Supabase, and store both `mediaAssetId` and `url` on a layer.
+The dashboard now provides the reusable Media Library, and image/video layers can either choose an existing compatible asset or upload a new one. Selection stores both `mediaAssetId` and the stable `url`; players continue rendering the URL directly. Existing scenes containing only `SceneLayer.content.url`, including URLs from the legacy public Supabase Storage `media` bucket, remain valid without migration.
 
 ## Railway configuration
 
@@ -34,10 +34,14 @@ Create a dedicated R2 bucket, attach the intended public custom domain, and crea
 
 Applying the Supabase migration creates the catalog and its row-level-security policies. It does not copy or delete objects in the legacy Supabase bucket.
 
-## Temporary MEDIA-01A.1 verification
+## Library workflow
 
-The signed-in dashboard temporarily includes **Test R2 upload**. Choose a supported playback-ready file and run the test. The browser requests authorization from the HTTP origin corresponding to `VITE_SIGNALING_URL`, then PUTs the file directly to R2. Success displays the generated object key, public URL, byte size and MIME type. This probe does not insert `media_assets` metadata or update scenes.
+The signed-in dashboard library supports upload, name/filename search, image/video filtering, newest/name/oldest sorting, metadata inspection, distinct-scene usage counts, and deletion of unused assets. The same component opens as a type-constrained picker from image and video layers.
+
+For a new asset, the browser validates the MIME type and 500 MiB limit, reads dimensions and video duration locally, requests a presigned URL, uploads directly to R2, then inserts the `media_assets` row through Supabase. If the metadata insert fails, it attempts to delete the newly uploaded R2 object and reports whether an orphan may remain. No file bytes pass through Railway.
+
+Deletion is deliberately object-first: a fresh client-side scan of scene `layers` blocks referenced assets, Railway deletes the validated `media/<uuid>/<safe-filename>` R2 key, and only then does Supabase delete the metadata row. The backend remains restricted to authenticated users, the configured bucket, and generated media keys. The current single-admin authorization model permits any signed-in editor to manage catalog assets.
 
 Because that authorization request is cross-origin, the deployed Railway `SIGNALING_ALLOWED_ORIGINS` must include the editor's exact origin, including `http://localhost:5173` when testing locally. Allowed media preflights return `204` and advertise only `POST`, `DELETE`, `OPTIONS`, `Authorization`, and `Content-Type`; wildcard origins are never used.
 
-Remove `src/admin/R2UploadTestPanel.tsx`, `src/lib/manualR2Upload.ts`, their test, styles, and the single `Admin.tsx` import/render when MEDIA-01B replaces the probe with the real media-library flow.
+FFmpeg conversion remains a local/NAS workflow planned for MEDIA-02. Only playback-ready derivatives belong in R2; originals and masters remain local or on the NAS.

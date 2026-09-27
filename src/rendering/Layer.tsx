@@ -2,6 +2,7 @@ import { useEffect, useRef, type CSSProperties } from 'react'
 import type { SceneLayer } from '../types'
 import { Clock } from './Clock'
 import { SyncedVideo } from './SyncedVideo'
+import { layerPlaybackUrl } from '../media/mediaLibraryUtils'
 
 function LiveVideo({ stream, style }: { stream: MediaStream; style: CSSProperties }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -15,12 +16,16 @@ function LiveVideo({ stream, style }: { stream: MediaStream; style: CSSPropertie
   return <video ref={videoRef} className="media-layer" style={style} autoPlay playsInline muted />
 }
 
-export function Layer({ layer, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, rawVideo = false, liveStream }: { layer: SceneLayer; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; rawVideo?: boolean; liveStream?: MediaStream }) {
-  const style: CSSProperties = { objectFit: layer.content.fit ?? 'cover', left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }
+export type LayerGeometryMode = 'percentage' | 'virtual-pixel'
+
+export function Layer({ layer, geometryMode = 'percentage', serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, rawVideo = false, liveStream }: { layer: SceneLayer; geometryMode?: LayerGeometryMode; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; rawVideo?: boolean; liveStream?: MediaStream }) {
+  const unit = geometryMode === 'virtual-pixel' ? 'px' : '%'
+  const style: CSSProperties = { objectFit: layer.content.fit ?? 'cover', left: `${layer.x}${unit}`, top: `${layer.y}${unit}`, width: `${layer.width}${unit}`, height: `${layer.height}${unit}`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }
   if (layer.type === 'live') return liveStream ? <LiveVideo stream={liveStream} style={style} /> : null
   const typography = { fontFamily: layer.content.fontFamily ?? "'Roboto', sans-serif", fontSize: layer.content.fontSize ? `${layer.content.fontSize / 19.2}cqw` : undefined }
-  if (layer.type === 'video' && layer.content.url) return rawVideo ? <video className="media-layer" style={style} src={layer.content.url} autoPlay muted={layer.content.muted !== false} loop={layer.content.loop !== false} playsInline /> : <SyncedVideo style={style} src={layer.content.url} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
-  if (layer.type === 'image' && layer.content.url) return <img className="media-layer" style={style} src={layer.content.url} alt="" />
+  const mediaUrl = layerPlaybackUrl(layer)
+  if (layer.type === 'video' && mediaUrl) return rawVideo ? <video className="media-layer" style={style} src={mediaUrl} autoPlay muted={layer.content.muted !== false} loop={layer.content.loop !== false} playsInline /> : <SyncedVideo style={style} src={mediaUrl} muted={layer.content.muted !== false} loop={layer.content.loop !== false} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} />
+  if (layer.type === 'image' && mediaUrl) return <img className="media-layer" style={style} src={mediaUrl} alt="" />
   if (layer.type === 'clock') return <Clock style={style} timezone={layer.content.timezone} serverEpochOffsetMs={serverEpochOffsetMs} />
   if (layer.type === 'ticker') return <div className="ticker-layer" style={{ ...style, ...typography }}><span>{layer.content.text}</span></div>
   return <div className="text-layer" style={{ ...style, ...typography }}>{layer.content.text}</div>

@@ -21,6 +21,16 @@ export function bounds(rects: Rect[], includeOrigin = false): Rect {
     height: Math.max(1, Math.max(...rects.map(r => r.y + r.height)) - y) }
 }
 
+export function newImageLayerSize(wallBounds?: Pick<Rect, 'width'>) {
+  const fallbackWidth = 20
+  const wallWidth = wallBounds?.width
+  const width = typeof wallWidth === 'number' && Number.isFinite(wallWidth) && wallWidth > 0
+    ? wallWidth / WORKSPACE.width * 100 * .2
+    : fallbackWidth
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : fallbackWidth
+  return { width: safeWidth, height: safeWidth / (16 / 9) }
+}
+
 export function sceneDevices(scene: Scene, devices: Device[]) {
   return devices.filter(d => !scene.device_ids?.length || scene.device_ids.includes(d.id))
 }

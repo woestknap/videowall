@@ -1,5 +1,0 @@
-r2 api acces key:
-911ebb07666da45c55866030f412c609
-
-r2 api SECRET acces key:
-464c77c29e9dbcd32e6d2a9ff924e8bbfadf0a57180c7cddc6024127e278b672

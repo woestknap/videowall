@@ -6,7 +6,7 @@ const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8'
 const editor = await readFile(new URL('../src/editor/SceneEditorPage.tsx', import.meta.url), 'utf8')
 
 test('guides render in an unscaled screen-space overlay', () => {
-  assert.match(editor, /<div className="editor-guide-overlay">/)
+  assert.match(editor, /<div className=\{`editor-guide-overlay \$\{isV2 \? 'virtual-pixel-guide-overlay' : ''\}`\}>/)
   assert.match(css, /\.editor-guide-overlay\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*pointer-events:\s*none;/)
   assert.match(css, /\.device-screen-guide,[^{]+\{[^}]*border:\s*1px solid/)
   assert.doesNotMatch(css.match(/\.editor-guide-overlay\s*\{([^}]+)\}/)?.[1] ?? '', /transform|scale/)

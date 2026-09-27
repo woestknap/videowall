@@ -9,9 +9,9 @@
     "check": "tsc -b --pretty false",
     "signaling": "node --env-file-if-exists=.env server/signaling/index.js",
     "test:signaling": "node --test tests/signaling.test.mjs tests/signalingConfig.test.mjs",
-    "test:media": "node --experimental-strip-types --test tests/mediaBackend.test.mjs tests/manualR2Upload.test.mjs",
+    "test:media": "node --experimental-strip-types --test tests/mediaBackend.test.mjs tests/mediaLibrary.test.mjs",
     "test:recovery": "node --experimental-strip-types --test tests/recovery.test.mjs",
-    "test:geometry": "node --test tests/wallGeometry.test.mjs tests/editorZoom.test.mjs tests/editorGuideCss.test.mjs",
+    "test:geometry": "node --experimental-strip-types --test tests/wallGeometry.test.mjs tests/virtualWallGeometry.test.mjs tests/virtualSceneRendering.test.mjs tests/editorSceneGeometry.test.mjs tests/physicalWallLayout.test.mjs tests/editorZoom.test.mjs tests/editorGuideCss.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

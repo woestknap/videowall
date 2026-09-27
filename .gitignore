@@ -6,3 +6,5 @@ supabase/.temp/
 *.tsbuildinfo
 __pycache__/
 .tmp-kiosk-deps/
+
+r2 api keys.txt

@@ -49,6 +49,8 @@ These are planned tasks, not claims that future behavior already exists. Each it
 ## Production and media delivery
 
 - **PROD-02 — Hosted signaling (complete):** the production signaling process, authenticated session path, exact-origin policy and stable hosted endpoint are established.
-- **MEDIA-01 — Reusable media library (active):** MEDIA-01A adds the Supabase catalog and the authenticated Cloudflare R2 control plane. The media-library browser UI, direct browser upload flow and asset selection remain in later MEDIA-01 work.
+- **MEDIA-01A — Media backend/R2 foundation (complete):** Supabase metadata, authenticated Railway signing/deletion, exact-origin CORS, direct browser-to-R2 uploads and public playback URLs are established.
+- **MEDIA-01B — Reusable media library (complete):** the dashboard manages reusable assets and the editor can upload or select compatible assets while saving both `mediaAssetId` and `url`; legacy URL-only scenes remain supported.
 - **MEDIA-02 — Local FFmpeg converters (next):** define repeatable local/NAS conversion presets for playback-ready files before they enter R2. Transcoding does not run in Railway or R2.
-- **LIVE-09 — Later:** continue live-input work only after the media-library and conversion phases; scope it independently without coupling stored media to live transport.
+- **LIVE-09 — Multiple live inputs (later):** continue live-input work only after the media-library and conversion phases; scope it independently without coupling stored media to live transport.
+- **Remote Pi access (later):** design remote player administration independently from media delivery and the current paired-player authorization path.

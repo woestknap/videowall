@@ -4,9 +4,14 @@ import { advanceWorkspaceDrag, deltaClientToWorkspace, devicePositionChange, dis
 import { supabase } from '../lib/supabase'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { recoveryDelayMs } from '../lib/recovery'
-import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, layerReference, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
+import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, newImageLayerSize, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage } from '../signalingProtocol'
+import { MediaLibrary } from '../media/MediaLibrary'
+import { uploadMediaAsset } from '../media/mediaApi'
+import { layerPlaybackUrl, layerWithMediaAsset, mediaDimensionChange, mediaTypeForMime } from '../media/mediaLibraryUtils'
+import type { MediaAsset, Wall } from '../types'
+import { editorLayerRect, editorSceneCanvas, editorSceneSaveValues, editorVirtualDeviceRects, fitVirtualLayerToRegions, moveEditorLayer, newEditorLayer, v2WallGeometryWarning, virtualGeometryForWall } from '../lib/editorSceneGeometry'
 
 function LiveCameraPreview({ stream }: { stream: MediaStream }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -22,7 +27,8 @@ function LiveCameraPreview({ stream }: { stream: MediaStream }) {
 
 export function EditorMedia({ layer, onSize, liveStream, liveLayerId }: { layer: SceneLayer; onSize: (width: number, height: number) => void; liveStream?: MediaStream | null; liveLayerId?: string | null }) {
   if (layer.type === 'live') return liveStream && liveLayerId === layer.id ? <LiveCameraPreview stream={liveStream} /> : <div className="media-placeholder">Live input · preview disabled</div>
-  return layer.type === 'image' && layer.content.url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && layer.content.url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={layer.content.url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
+  const url = layerPlaybackUrl(layer)
+  return layer.type === 'image' && url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
 }
 
 function layerLabel(layer: SceneLayer): string {
@@ -72,10 +78,14 @@ type DeviceDrag = { id: string; pointerId: number; origin: WorkspaceDrag }
 
 export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [scene, setScene] = useState<Scene | null>(null)
+  const [sceneWall, setSceneWall] = useState<Wall | null>(null)
+  const [sceneWallLoaded, setSceneWallLoaded] = useState(false)
   const [devices, setDevices] = useState<Device[]>([])
   const [selectedId, setSelectedId] = useState<string>('')
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
   const [notice, setNotice] = useState('')
+  const [mediaPickerOpen, setMediaPickerOpen] = useState(false)
+  const newMediaLayerIdsRef = useRef(new Set<string>())
   const dragRef = useRef<DragMotion | null>(null)
   const deviceDragRef = useRef<DeviceDrag | null>(null)
   const [layoutDirty, setLayoutDirty] = useState(false)
@@ -98,10 +108,22 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [liveSessionActive, setLiveSessionActive] = useState(false)
   const [targetStatuses, setTargetStatuses] = useState<Record<string, TargetStatus>>({})
   const targetRuntimesRef = useRef<Map<string, TargetRuntime>>(new Map())
-  useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
+  useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids,wall_id,geometry_version,canvas_width_px,canvas_height_px,wall_geometry_revision').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => {
     let cancelled = false
-    if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size').order('layout_y').order('layout_x').then(({ data, error }) => {
+    setSceneWallLoaded(false)
+    if (!scene?.wall_id || !supabase) { setSceneWall(null); setSceneWallLoaded(true); return }
+    void supabase.from('walls').select('id,name,layout_mode,virtual_pixels_per_mm').eq('id', scene.wall_id).single().then(({ data, error }) => {
+      if (cancelled) return
+      setSceneWall(data ?? null)
+      setSceneWallLoaded(true)
+      if (error) setNotice(error.message)
+    })
+    return () => { cancelled = true }
+  }, [scene?.wall_id])
+  useEffect(() => {
+    let cancelled = false
+    if (supabase) void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size,included_in_wall').order('layout_y').order('layout_x').then(({ data, error }) => {
       if (cancelled) return
       if (error) { setNotice(error.message); return }
       setDevices(data ?? [])
@@ -112,6 +134,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   useEffect(() => { const keyDown = (event: KeyboardEvent) => { if (event.code === 'Space' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); setSpaceHeld(true) } }; const keyUp = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }; window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp); return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp) } }, [])
   useEffect(() => {
     const nudge = (event: KeyboardEvent) => {
+      if (scene?.geometry_version === 2) return
       if (!selectedDeviceId || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
       const target = event.target
       if (target instanceof HTMLElement && target.closest('input, textarea, select, button, a, [contenteditable="true"]')) return
@@ -125,7 +148,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     }
     window.addEventListener('keydown', nudge)
     return () => window.removeEventListener('keydown', nudge)
-  }, [selectedDeviceId])
+  }, [selectedDeviceId, scene?.geometry_version])
   useEffect(() => {
     const stage = stageRef.current
     const workspace = stage?.parentElement
@@ -152,17 +175,15 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   useEffect(() => {
     if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
     const workspace = stageRef.current?.parentElement
+    const canvas = editorSceneCanvas(scene)
     const active = sceneDevices(scene, devices)
-    if (!workspace || !active.length) {
-      if (!active.length) initialFitSceneRef.current = scene.id
-      return
-    }
+    if (!workspace || !canvas || (scene.geometry_version !== 2 && !active.length)) { if (!active.length || !canvas) initialFitSceneRef.current = scene.id; return }
     const fitInitialView = () => {
       const stage = stageRef.current
       if (!stage) return
       const controls = workspace.querySelector<HTMLElement>('.canvas-controls')
       const hint = workspace.querySelector<HTMLElement>('.canvas-hint')
-      const fitted = fitEditorView({ bounds: bounds(active.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT } })
+      const fitted = fitEditorView({ bounds: scene.geometry_version === 2 ? { x: 0, y: 0, ...canvas } : bounds(active.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: canvas })
       if (!fitted) return
       setView(fitted)
       setFitZoom(fitted.zoom)
@@ -174,9 +195,18 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     fitInitialView()
     return () => observer.disconnect()
   }, [scene, devices, devicesLoaded])
-  if (!scene || !devicesLoaded) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
-  const currentScene = { ...scene, layers: scene.layers.map(layer => toWorkspaceLayer(layer, scene, devices)) }
-  const activeDevices = sceneDevices(currentScene, devices)
+  if (!scene || !devicesLoaded || (scene.geometry_version === 2 && !sceneWallLoaded)) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
+  const isV2 = scene.geometry_version === 2
+  const resolvedWallSize = editorSceneCanvas(scene)
+  if (!resolvedWallSize) return <main className="player-message">V2 scene canvas is invalid.</main>
+  const wallSize = resolvedWallSize
+  const currentScene = isV2 ? scene : { ...scene, layers: scene.layers.map(layer => toWorkspaceLayer(layer, scene, devices)) }
+  const editorDevices = isV2 ? devices.filter(device => device.wall_id === currentScene.wall_id && (sceneWall?.layout_mode !== 'physical' || device.included_in_wall !== false)) : devices
+  const virtualGeometry = isV2 ? virtualGeometryForWall(sceneWall, editorDevices) : null
+  const virtualDeviceRects = editorVirtualDeviceRects(currentScene, virtualGeometry)
+  const activeDevices = sceneDevices(currentScene, editorDevices)
+  const activeVirtualDeviceRects = virtualDeviceRects.filter(rect => activeDevices.some(device => device.id === rect.deviceId))
+  const revisionWarning = v2WallGeometryWarning(currentScene, virtualGeometry)
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
   const selectedLiveTargets = selected?.type === 'live' ? activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)) : []
   const connectedTargetCount = Object.values(targetStatuses).filter(status => status.connectionState === 'connected').length
@@ -387,18 +417,45 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       setCameraError(name === 'NotAllowedError' ? 'Camera permission was denied.' : name === 'NotFoundError' || name === 'OverconstrainedError' ? 'The selected camera is unavailable.' : 'Camera preview could not be started.')
     }
   }
-  function updateLayer(id: string, change: Partial<SceneLayer>) { setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) }) }
-  function updateContent(key: 'text' | 'url' | 'timezone' | 'fontFamily', value: string) { if (selected) updateLayer(selected.id, { content: { ...selected.content, [key]: value } }) }
-  function addLayer(type: 'image' | 'video' | 'live') { const layer: SceneLayer = { id: crypto.randomUUID(), type, target: [], space: 'wall', coordinateSpace: 'freeform', x: 10, y: 10, width: 45, height: 45, zIndex: currentScene.layers.length + 1, scale: 1, rotation: 0, lockedAspect: true, aspectRatio: 16 / 9, content: type === 'live' ? { liveSourceId: crypto.randomUUID() } : { url: '' } }; setScene({ ...currentScene, layers: [...currentScene.layers, layer] }); setSelectedId(layer.id) }
-  function removeSelected() { if (!selected) return; if (cameraLayerId === selected.id) stopCamera(); setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
+  function updateLayer(id: string, change: Partial<SceneLayer>) {
+    if ((isV2 && (change.x !== undefined || change.y !== undefined)) || change.width !== undefined || change.height !== undefined || change.type !== undefined) newMediaLayerIdsRef.current.delete(id)
+    setScene({ ...currentScene, layers: currentScene.layers.map((layer) => layer.id === id ? { ...layer, ...change } : layer) })
+  }
+  function updateContent(key: 'text' | 'url' | 'timezone' | 'fontFamily', value: string) { if (selected) { if (key === 'url') newMediaLayerIdsRef.current.delete(selected.id); updateLayer(selected.id, { content: { ...selected.content, ...(key === 'url' ? { mediaAssetId: undefined } : {}), [key]: value } }) } }
+  function addLayer(type: 'image' | 'video' | 'live') {
+    const id = crypto.randomUUID()
+    const imageSize = newImageLayerSize(activeDevices.length ? bounds(activeDevices.map(deviceRect)) : undefined)
+    const layer: SceneLayer = isV2
+      ? newEditorLayer(currentScene, type, id, currentScene.layers.length + 1, type === 'live' ? crypto.randomUUID() : undefined)
+      : { id, type, target: [], space: 'wall', coordinateSpace: 'freeform', x: 10, y: 10, width: type === 'image' ? imageSize.width : 45, height: type === 'image' ? imageSize.height : 45, zIndex: currentScene.layers.length + 1, scale: 1, rotation: 0, lockedAspect: true, aspectRatio: 16 / 9, content: type === 'live' ? { liveSourceId: crypto.randomUUID() } : { url: '' } }
+    if (type !== 'live') newMediaLayerIdsRef.current.add(layer.id)
+    setScene({ ...currentScene, layers: [...currentScene.layers, layer] })
+    setSelectedId(layer.id)
+  }
+  function removeSelected() { if (!selected) return; newMediaLayerIdsRef.current.delete(selected.id); if (cameraLayerId === selected.id) stopCamera(); setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
   function moveLayer(direction: 'up' | 'down') { if (!selected) return; updateLayer(selected.id, { zIndex: Math.max(1, selected.zIndex + (direction === 'up' ? 1 : -1)) }) }
-  function toggleTarget(deviceId: string) { if (!selected) return; const target = !selected.target.length ? devices.filter((item) => item.id !== deviceId).map((item) => item.id) : selected.target.includes(deviceId) ? selected.target.filter((id) => id !== deviceId) : [...selected.target, deviceId]; updateLayer(selected.id, { target }) }
-  function toggleSceneDevice(deviceId: string) { const current = currentScene.device_ids ?? []; const next = !current.length ? devices.filter((item) => item.id !== deviceId).map((item) => item.id) : current.includes(deviceId) ? current.filter((id) => id !== deviceId) : [...current, deviceId]; setScene({ ...currentScene, device_ids: next.length === devices.length ? [] : next }) }
-  function updateDeviceLayout(deviceId: string, change: Partial<Device>) { setDevices((items) => items.map((item) => item.id === deviceId ? { ...item, ...change } : item)); setLayoutDirty(true) }
-  async function save() { if (!supabase) return; const { error } = await supabase.from('scenes').update({ name: currentScene.name, layers: currentScene.layers, duration_seconds: currentScene.duration_seconds, device_ids: currentScene.device_ids ?? [] }).eq('id', currentScene.id); setNotice(error ? error.message : 'Scene saved. Publish it from the dashboard when ready.') }
+  function toggleTarget(deviceId: string) { if (!selected) return; const target = !selected.target.length ? editorDevices.filter((item) => item.id !== deviceId).map((item) => item.id) : selected.target.includes(deviceId) ? selected.target.filter((id) => id !== deviceId) : [...selected.target, deviceId]; updateLayer(selected.id, { target }) }
+  function toggleSceneDevice(deviceId: string) { const current = currentScene.device_ids ?? []; const next = !current.length ? editorDevices.filter((item) => item.id !== deviceId).map((item) => item.id) : current.includes(deviceId) ? current.filter((id) => id !== deviceId) : [...current, deviceId]; setScene({ ...currentScene, device_ids: next.length === editorDevices.length ? [] : next }) }
+  function updateDeviceLayout(deviceId: string, change: Partial<Device>) { if (isV2) return; setDevices((items) => items.map((item) => item.id === deviceId ? { ...item, ...change } : item)); setLayoutDirty(true) }
+  async function save() { if (!supabase) return; const { error } = await supabase.from('scenes').update(editorSceneSaveValues(currentScene)).eq('id', currentScene.id); setNotice(error ? error.message : 'Scene saved. Publish it from the dashboard when ready.') }
   async function saveLayout() { if (!supabase) return; const client = supabase; const results = await Promise.all(devices.map(({ id, name, layout_x, layout_y, layout_width, layout_height, auto_size }) => client.from('devices').update({ name, layout_x, layout_y, auto_size, ...(auto_size === false ? { layout_width, layout_height } : {}) }).eq('id', id))); const error = results.find((result) => result.error)?.error; if (error) return setNotice(error.message); setLayoutDirty(false); setNotice('Physical screen layout saved.') }
-  async function upload(file: File) { if (!supabase || !selected) return; setNotice('Uploading media…'); const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-80); const path = `${currentScene.id}/${crypto.randomUUID()}-${safeName}`; const { error } = await supabase.storage.from('media').upload(path, file, { cacheControl: '31536000', upsert: false }); if (error) return setNotice(error.message); const { data } = supabase.storage.from('media').getPublicUrl(path); updateLayer(selected.id, { content: { ...selected.content, url: data.publicUrl } }); setNotice('Uploaded. Save the scene to keep this layer.') }
-  const wallSize = { width: WALL_WORKSPACE_WIDTH, height: WALL_WORKSPACE_HEIGHT }
+  function selectMediaAsset(asset: MediaAsset) {
+    if (!selected || (selected.type !== 'image' && selected.type !== 'video')) return
+    try {
+      const isNewMediaLayer = newMediaLayerIdsRef.current.delete(selected.id)
+      const initialSizing = isNewMediaLayer ? (isV2 ? 'intrinsic' : 'match-aspect') : 'preserve'
+      updateLayer(selected.id, layerWithMediaAsset(selected, asset, initialSizing))
+      setMediaPickerOpen(false)
+      setNotice(`${asset.name} selected. Save the scene to keep this layer.`)
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Media selection failed.') }
+  }
+  async function uploadNewMedia(file: File) {
+    if (!selected || (selected.type !== 'image' && selected.type !== 'video')) return
+    if (mediaTypeForMime(file.type) !== selected.type) { setNotice(`Choose a ${selected.type} file for this ${selected.type} layer.`); return }
+    setNotice(`Uploading ${file.name}…`)
+    try { selectMediaAsset(await uploadMediaAsset(file)) }
+    catch (error) { setNotice(error instanceof Error ? error.message : 'Media upload failed.') }
+  }
   function stageGeometry() {
     const stage = stageRef.current
     return stage ? stageGeometryFromRect(stage.getBoundingClientRect(), view) : null
@@ -426,12 +483,13 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const target = motion.deviceId ? devices.find(item => item.id === motion.deviceId) : null
     if (motion.deviceId && !target) return
     const reference = target ? deviceRect(target) : { x: 0, y: 0, ...wallSize }
-    motion.x += delta.x / reference.width * 100
-    motion.y += delta.y / reference.height * 100
+    const moved = moveEditorLayer(currentScene, { ...currentScene.layers.find(layer => layer.id === motion.id)!, x: motion.x, y: motion.y }, delta, reference)
+    motion.x = moved.x
+    motion.y = moved.y
     updateLayer(motion.id, { x: motion.x, y: motion.y })
   }
   function startDeviceDrag(event: PointerEvent<HTMLSpanElement>, device: Device) {
-    if (spaceHeld || event.button !== 0) return
+    if (isV2 || spaceHeld || event.button !== 0) return
     const geometry = stageGeometry()
     if (!geometry) return
     setSelectedDeviceId(device.id)
@@ -475,27 +533,36 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const geometry = stageGeometry()
     if (geometry) zoomAt(geometry.center, current => current * factor)
   }
-  function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || !activeDevices.length) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const fitted = fitEditorView({ bounds: bounds(activeDevices.map(deviceRect)), workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: wallSize }); if (fitted) { setView(fitted); setFitZoom(fitted.zoom) } }
-  function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) { if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return; const layer = currentScene.layers.find((item) => item.id === layerId); if (!layer || (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight)) return; const target = devices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))), screenSpace = (layer.space ?? 'screen') === 'screen', referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH, referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT; updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 }) }
-  function updateDimension(key: 'width' | 'height', value: number) { if (!selected) return; const change: Partial<SceneLayer> = { [key]: value }; if (selected.lockedAspect && selected.aspectRatio) { const target = activeDevices.find(item => !selected.target.length || selected.target.includes(item.id)), reference = layerReference(selected, currentScene, devices, target); if (key === 'width') change.height = value * (reference.width / reference.height) / selected.aspectRatio; else change.width = value * selected.aspectRatio / (reference.width / reference.height) }; updateLayer(selected.id, change) }
+  function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || (!isV2 && !activeDevices.length)) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const fitBounds = isV2 ? { x: 0, y: 0, ...wallSize } : bounds(activeDevices.map(deviceRect)); const fitted = fitEditorView({ bounds: fitBounds, workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: wallSize }); if (fitted) { setView(fitted); setFitZoom(fitted.zoom) } }
+  function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) { if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return; const layer = currentScene.layers.find((item) => item.id === layerId); if (!layer || (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight)) return; if (isV2) { updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight }); return } const target = editorDevices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))), screenSpace = (layer.space ?? 'screen') === 'screen', referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH, referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT; updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 }) }
+  function updateDimension(key: 'width' | 'height', value: number) { if (selected) updateLayer(selected.id, mediaDimensionChange(selected, key, value)) }
   const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} liveStream={cameraStream} liveLayerId={cameraLayerId} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
-  const rectStyle = (item: Device) => { const rect = deviceRect(item); return { left: `${rect.x / WALL_WORKSPACE_WIDTH * 100}%`, top: `${rect.y / WALL_WORKSPACE_HEIGHT * 100}%`, width: `${rect.width / WALL_WORKSPACE_WIDTH * 100}%`, height: `${rect.height / WALL_WORKSPACE_HEIGHT * 100}%` } }
+  const editorDeviceRect = (item: Device) => isV2 ? virtualDeviceRects.find(rect => rect.deviceId === item.id) ?? null : deviceRect(item)
+  const activeDeviceRects = activeDevices.flatMap(device => { const rect = editorDeviceRect(device); return rect ? [{ device, rect }] : [] })
+  const rectStyle = (item: Device): CSSProperties => { const rect = editorDeviceRect(item); return rect ? { left: `${rect.x / wallSize.width * 100}%`, top: `${rect.y / wallSize.height * 100}%`, width: `${rect.width / wallSize.width * 100}%`, height: `${rect.height / wallSize.height * 100}%` } : { display: 'none' } }
+  const layerStyle = (layer: SceneLayer): CSSProperties => ({ left: `${layer.x / (isV2 ? wallSize.width : 100) * 100}%`, top: `${layer.y / (isV2 ? wallSize.height : 100) * 100}%`, width: `${layer.width / (isV2 ? wallSize.width : 100) * 100}%`, height: `${layer.height / (isV2 ? wallSize.height : 100) * 100}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` })
   const clientGuideStyle = (rect: ClientRect, rotation = 0): CSSProperties => ({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, transform: rotation ? `rotate(${rotation}deg)` : undefined })
   const scaleRectFromCenter = (rect: WorkspaceRect, scale: number): WorkspaceRect => ({ x: rect.x + rect.width * (1 - scale) / 2, y: rect.y + rect.height * (1 - scale) / 2, width: rect.width * scale, height: rect.height * scale })
-  const selectedLayerGuides = selected ? ((selected.space ?? 'screen') === 'screen'
+  const selectedLayerGuides = selected ? (isV2
+    ? [{ key: selected.id, rect: scaleRectFromCenter(editorLayerRect(currentScene, selected), selected.scale ?? 1), clip: null, rotation: selected.rotation ?? 0 }]
+    : (selected.space ?? 'screen') === 'screen'
     ? activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)).map(device => {
       const clip = deviceRect(device)
       const rect = scaleRectFromCenter({ x: clip.x + selected.x / 100 * clip.width, y: clip.y + selected.y / 100 * clip.height, width: selected.width / 100 * clip.width, height: selected.height / 100 * clip.height }, selected.scale ?? 1)
       return { key: `${selected.id}-${device.id}`, rect, clip, rotation: selected.rotation ?? 0 }
     })
     : [{ key: selected.id, rect: scaleRectFromCenter({ x: selected.x / 100 * wallSize.width, y: selected.y / 100 * wallSize.height, width: selected.width / 100 * wallSize.width, height: selected.height / 100 * wallSize.height }, selected.scale ?? 1), clip: null, rotation: selected.rotation ?? 0 }]) : []
-  return <main className="editor-page"><header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>Scene editor</p></div><div className="editor-actions"><button className="secondary" disabled={!layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header><div className="editor-layout">
+  const fitSelectedLayer = () => { if (!selected) return; updateLayer(selected.id, isV2 ? fitVirtualLayerToRegions(selected, activeVirtualDeviceRects) : fitLayerToDevices(selected, activeDevices)) }
+  const renderedLayers = isV2
+    ? currentScene.layers.map(layer => <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={layerStyle(layer)} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)
+    : currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? editorDevices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ ...rectStyle(item), zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{editorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={layerStyle(layer)} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)
+  return <main className="editor-page"><header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>{isV2 ? `Geometry: V2 virtual-pixel · Canvas: ${wallSize.width} × ${wallSize.height} px · Wall revision: ${virtualGeometry?.status === 'valid' && virtualGeometry.geometryRevision === currentScene.wall_geometry_revision ? 'current' : 'changed'}` : 'Scene editor · Legacy V1 geometry'}</p></div><div className="editor-actions"><button className="secondary" disabled={isV2 || !layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header>{revisionWarning && <p className="editor-geometry-warning">{revisionWarning}</p>}<div className="editor-layout">
     <aside className="editor-toolbar">
       <section className="editor-sidebar-group">
-        <div className="editor-sidebar-heading"><p className="eyebrow">SCREENS IN THIS SCENE</p><span>{activeDevices.length} / {devices.length}</span></div>
-        <div className="screen-list"><small>Choose displays, then place their lit image areas. Left/Top include bezels and gaps. Save screen layout to apply changes to the players.</small>{devices.map((item) => <details className="screen-list-item" key={item.id}><summary><input aria-label={`Use ${item.name} in this scene`} type="checkbox" checked={isSceneDevice(item.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleSceneDevice(item.id)} /><span>{item.name}</span></summary><div className="screen-details-body"><label>Name<input value={item.name} onChange={(event) => updateDeviceLayout(item.id, { name: event.target.value })} /></label><ScreenLayoutControls device={item} onChange={change => updateDeviceLayout(item.id, change)} /></div></details>)}</div>
-        {activeDevices.some(d => d.auto_size === false) && activeDevices.some(d => d.auto_size !== false) && <p className="notice">Mixed layout units: enter measured sizes for every selected screen before aligning them.</p>}
-        <small>Screen outlines stay above media. Drag a screen label to position that display independently.</small>
+        <div className="editor-sidebar-heading"><p className="eyebrow">SCREENS IN THIS SCENE</p><span>{activeDevices.length} / {editorDevices.length}</span></div>
+        <div className="screen-list"><small>{isV2 ? 'Device outlines use the wall’s current normalized virtual-pixel regions. Edit calibration outside this scene.' : 'Choose displays, then place their lit image areas. Left/Top include bezels and gaps. Save screen layout to apply changes to the players.'}</small>{editorDevices.map((item) => <details className="screen-list-item" key={item.id}><summary><input aria-label={`Use ${item.name} in this scene`} type="checkbox" checked={isSceneDevice(item.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleSceneDevice(item.id)} /><span>{item.name}</span></summary>{isV2 ? <div className="screen-details-body"><small>{(() => { const rect = editorDeviceRect(item); return rect ? `${rect.x}, ${rect.y} · ${rect.width} × ${rect.height} virtual px` : 'Virtual region unavailable' })()}</small></div> : <div className="screen-details-body"><label>Name<input value={item.name} onChange={(event) => updateDeviceLayout(item.id, { name: event.target.value })} /></label><ScreenLayoutControls device={item} onChange={change => updateDeviceLayout(item.id, change)} /></div>}</details>)}</div>
+        {!isV2 && activeDevices.some(d => d.auto_size === false) && activeDevices.some(d => d.auto_size !== false) && <p className="notice">Mixed layout units: enter measured sizes for every selected screen before aligning them.</p>}
+        <small>{isV2 ? 'The persisted scene canvas remains fixed even if current wall geometry changes.' : 'Screen outlines stay above media. Drag a screen label to position that display independently.'}</small>
       </section>
       <section className="editor-sidebar-group">
         <p className="eyebrow">ADD MEDIA</p>
@@ -507,26 +574,26 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
           {layersByStack.length ? layersByStack.map(({ layer }) => <button key={layer.id} type="button" className={`editor-layer-row ${layer.id === selectedId ? 'is-selected' : ''}`} aria-pressed={layer.id === selectedId} onClick={() => setSelectedId(layer.id)} title={layerLabel(layer)}><span className="editor-layer-type">{layer.type}</span><span className="editor-layer-name">{layerLabel(layer)}</span></button>) : <small>No layers yet. Add an image or video above.</small>}
         </div>
       </section>
-      {selected && <section className="editor-sidebar-group editor-layer-settings"><p className="eyebrow">LAYER DISPLAY</p><div className="wall-layer-controls"><label>Layer canvas<select value={selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}><option value="screen">One copy on each selected display</option><option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span>{devices.map((item) => <label key={item.id} className={!isSceneDevice(item.id) ? 'disabled-target' : ''}><input type="checkbox" disabled={!isSceneDevice(item.id)} checked={isSceneDevice(item.id) && (!selected.target.length || selected.target.includes(item.id))} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div></div></section>}
+      {selected && <section className="editor-sidebar-group editor-layer-settings"><p className="eyebrow">LAYER DISPLAY</p><div className="wall-layer-controls"><label>Layer canvas<select disabled={isV2} value={isV2 ? 'wall' : selected.space ?? 'screen'} onChange={(event) => updateLayer(selected.id, { space: event.target.value as 'screen' | 'wall' })}>{!isV2 && <option value="screen">One copy on each selected display</option>}<option value="wall">Full wall — span and crop across displays</option></select></label><div className="target-picker"><span>This layer appears on</span>{editorDevices.map((item) => <label key={item.id} className={!isSceneDevice(item.id) ? 'disabled-target' : ''}><input type="checkbox" disabled={!isSceneDevice(item.id)} checked={isSceneDevice(item.id) && (!selected.target.length || selected.target.includes(item.id))} onChange={() => toggleTarget(item.id)} /> {item.name}</label>)}</div></div></section>}
     </aside>
-    <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => zoomButton(1 / 1.1)}>−</button><span>{Math.round(displayedZoomPercent(zoom, fitZoom))}%</span><button className="secondary" onClick={() => zoomButton(1.1)}>+</button><button className="secondary" onClick={fitScreens}>Fit screens</button><button className="secondary" onClick={() => setView({ zoom: 1, pan: { x: 0, y: 0 } })}>Reset</button></div><div ref={stageRef} className={`editor-stage media-workspace ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { dragRef.current = null; deviceDragRef.current = null; setPanDrag(null) }} onPointerCancel={() => { dragRef.current = null; deviceDragRef.current = null; setPanDrag(null) }}>{currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? devices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ ...rectStyle(item), zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{editorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, zIndex: layer.zIndex, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)}{devices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'} ${item.id === selectedDeviceId ? 'selected-device' : ''}`} key={item.id} style={rectStyle(item)}><span tabIndex={0} role="button" aria-label={`Select and move ${item.name}`} style={{ transform: `scale(${1 / zoom})` }} onFocus={() => setSelectedDeviceId(item.id)} onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div>{overlayStage && <div className="editor-guide-overlay"><div className="workspace-screen-guide" style={clientGuideStyle(workspaceRectToClientRect({ x: 0, y: 0, ...wallSize }, view, overlayStage, wallSize))} />{activeDevices.map(device => <div key={device.id} className={`device-screen-guide ${device.id === selectedDeviceId ? 'selected-device-guide' : ''}`} style={clientGuideStyle(workspaceRectToClientRect(deviceRect(device), view, overlayStage, wallSize))} />)}{selectedLayerGuides.map(guide => { const rect = workspaceRectToClientRect(guide.rect, view, overlayStage, wallSize); if (!guide.clip) return <div key={guide.key} className="layer-screen-guide" style={clientGuideStyle(rect, guide.rotation)} />; const clip = workspaceRectToClientRect(guide.clip, view, overlayStage, wallSize); return <div key={guide.key} className="layer-screen-guide-clip" style={clientGuideStyle(clip)}><div className="layer-screen-guide" style={clientGuideStyle({ left: rect.left - clip.left, top: rect.top - clip.top, width: rect.width, height: rect.height }, guide.rotation)} /></div> })}</div>}<p className="canvas-hint">Scroll to zoom · Space or middle drag to pan · Arrow keys move a selected screen by 1 unit · Shift uses 0.1.</p></section>
+    <section className="editor-stage-wrap" onWheel={zoomCanvas}><div className="canvas-controls"><button className="secondary" onClick={() => zoomButton(1 / 1.1)}>−</button><span>{Math.round(displayedZoomPercent(zoom, fitZoom))}%</span><button className="secondary" onClick={() => zoomButton(1.1)}>+</button><button className="secondary" onClick={fitScreens}>{isV2 ? 'Fit canvas' : 'Fit screens'}</button><button className="secondary" onClick={() => setView({ zoom: 1, pan: { x: 0, y: 0 } })}>Reset</button></div><div ref={stageRef} className={`editor-stage media-workspace ${isV2 ? 'virtual-pixel-stage' : ''} ${spaceHeld || panDrag ? 'panning-workspace' : ''}`} style={{ aspectRatio: `${wallSize.width} / ${wallSize.height}`, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} onPointerDown={startPan} onPointerMove={(event) => { movePan(event); dragLayer(event); dragDevice(event) }} onPointerUp={() => { dragRef.current = null; deviceDragRef.current = null; setPanDrag(null) }} onPointerCancel={() => { dragRef.current = null; deviceDragRef.current = null; setPanDrag(null) }}>{renderedLayers}{editorDevices.map((item) => <div className={`device-mask ${isSceneDevice(item.id) ? '' : 'inactive-device'} ${item.id === selectedDeviceId ? 'selected-device' : ''}`} key={item.id} style={rectStyle(item)}><span tabIndex={0} role="button" aria-label={`${isV2 ? 'Select' : 'Select and move'} ${item.name}`} style={{ transform: `scale(${1 / zoom})` }} onFocus={() => setSelectedDeviceId(item.id)} onPointerDown={(event) => startDeviceDrag(event, item)}>{item.name}</span></div>)}</div>{overlayStage && <div className={`editor-guide-overlay ${isV2 ? 'virtual-pixel-guide-overlay' : ''}`}><div className="workspace-screen-guide" style={clientGuideStyle(workspaceRectToClientRect({ x: 0, y: 0, ...wallSize }, view, overlayStage, wallSize))} />{activeDeviceRects.map(({ device, rect }) => <div key={device.id} className={`device-screen-guide ${device.id === selectedDeviceId ? 'selected-device-guide' : ''}`} style={clientGuideStyle(workspaceRectToClientRect(rect, view, overlayStage, wallSize))} />)}{selectedLayerGuides.map(guide => { const rect = workspaceRectToClientRect(guide.rect, view, overlayStage, wallSize); if (!guide.clip) return <div key={guide.key} className="layer-screen-guide" style={clientGuideStyle(rect, guide.rotation)} />; const clip = workspaceRectToClientRect(guide.clip, view, overlayStage, wallSize); return <div key={guide.key} className="layer-screen-guide-clip" style={clientGuideStyle(clip)}><div className="layer-screen-guide" style={clientGuideStyle({ left: rect.left - clip.left, top: rect.top - clip.top, width: rect.width, height: rect.height }, guide.rotation)} /></div> })}</div>}<p className="canvas-hint">{isV2 ? 'Scroll to zoom · Space or middle drag to pan · Layer geometry is stored in virtual pixels · Shift drags at 0.1×.' : 'Scroll to zoom · Space or middle drag to pan · Arrow keys move a selected screen by 1 unit · Shift uses 0.1.'}</p></section>
     <aside className="inspector">
       <p className="eyebrow">{selected ? 'MEDIA LAYER' : 'INSPECTOR'}</p>
       {selected ? <>
         <section className="inspector-section" aria-label="Source">
           <h2>Source</h2>
           <label>Type<select value={selected.type} disabled={selected.type === 'live'} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option>{selected.type === 'live' && <option value="live">Live input</option>}</select></label>
-          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><span>{selectedLiveTargets.length} target{selectedLiveTargets.length === 1 ? '' : 's'} from layer targeting</span><button disabled={!selectedLiveTargets.length} onClick={() => void startLiveSession()}>Start live session</button>{liveSessionActive && <button className="secondary" onClick={() => stopLiveSession()}>End session</button>}</div><small>To change targets while streaming: end the session, save the layer targeting, then start again.</small><p className="live-camera-message">{liveSessionActive ? `${connectedTargetCount}/${Object.keys(targetStatuses).length} targets WebRTC connected` : liveSessionStatus}</p>{Object.values(targetStatuses).map(status => <p className="live-camera-message" key={status.deviceId}><strong>{status.name}</strong> — signaling {status.signaling} · ready {status.peerReady ? 'yes' : 'no'} · WebRTC {status.connectionState} · ICE {status.iceConnectionState}</p>)}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="https://…" /></label><label className="upload-button">Upload {selected.type}<input type="file" accept={selected.type === 'video' ? 'video/*' : 'image/*'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file) }} /></label></>}
+          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><span>{selectedLiveTargets.length} target{selectedLiveTargets.length === 1 ? '' : 's'} from layer targeting</span><button disabled={!selectedLiveTargets.length} onClick={() => void startLiveSession()}>Start live session</button>{liveSessionActive && <button className="secondary" onClick={() => stopLiveSession()}>End session</button>}</div><small>To change targets while streaming: end the session, save the layer targeting, then start again.</small><p className="live-camera-message">{liveSessionActive ? `${connectedTargetCount}/${Object.keys(targetStatuses).length} targets WebRTC connected` : liveSessionStatus}</p>{Object.values(targetStatuses).map(status => <p className="live-camera-message" key={status.deviceId}><strong>{status.name}</strong> — signaling {status.signaling} · ready {status.peerReady ? 'yes' : 'no'} · WebRTC {status.connectionState} · ICE {status.iceConnectionState}</p>)}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="Legacy or direct URL" /></label><div className="media-source-actions"><button type="button" onClick={() => setMediaPickerOpen(true)}>Choose from library</button><label className="upload-button">Upload new<input type="file" accept={selected.type === 'video' ? 'video/mp4' : 'image/jpeg,image/png,image/webp'} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadNewMedia(file) }} /></label></div>{selected.content.mediaAssetId && <small>Library asset: {selected.content.mediaAssetId}</small>}</>}
         </section>
         <section className="inspector-section" aria-label="Fit and display">
           <h2>Fit / Display</h2>
           {selected.type !== 'live' && <label>Image fit<select value={selected.content.fit ?? 'cover'} onChange={event => updateLayer(selected.id, { content: { ...selected.content, fit: event.target.value as 'cover' | 'contain' } })}><option value="cover">Fill layer (crop edges)</option><option value="contain">Show whole image</option></select></label>}
           <label><input type="checkbox" checked={selected.lockedAspect !== false} onChange={(event) => updateLayer(selected.id, { lockedAspect: event.target.checked })} /> Lock media aspect ratio</label>
-          <button className="secondary" disabled={!activeDevices.length} onClick={() => updateLayer(selected.id, fitLayerToDevices(selected, activeDevices))}>Fit layer to selected screens</button>
+          <button className="secondary" disabled={!activeDevices.length} onClick={fitSelectedLayer}>Fit layer to selected screens</button>
         </section>
         <section className="inspector-section" aria-label="Transform">
           <h2>Transform</h2>
-          <div className="position-grid"><label>x<input type="number" value={selected.x} onChange={(event) => updateLayer(selected.id, { x: Number(event.target.value) })} /></label><label>y<input type="number" value={selected.y} onChange={(event) => updateLayer(selected.id, { y: Number(event.target.value) })} /></label><label>width<input type="number" min="0" value={selected.width} onChange={(event) => updateDimension('width', Number(event.target.value))} /></label><label>height<input type="number" min="0" value={selected.height} onChange={(event) => updateDimension('height', Number(event.target.value))} /></label></div>
+          <div className="position-grid"><label>{isV2 ? 'X (px)' : 'x'}<input type="number" value={selected.x} onChange={(event) => updateLayer(selected.id, { x: Number(event.target.value) })} /></label><label>{isV2 ? 'Y (px)' : 'y'}<input type="number" value={selected.y} onChange={(event) => updateLayer(selected.id, { y: Number(event.target.value) })} /></label><label>{isV2 ? 'Width (px)' : 'width'}<input type="number" min="0" value={selected.width} onChange={(event) => updateDimension('width', Number(event.target.value))} /></label><label>{isV2 ? 'Height (px)' : 'height'}<input type="number" min="0" value={selected.height} onChange={(event) => updateDimension('height', Number(event.target.value))} /></label></div>
           <div className="position-grid"><label>Rotation (degrees)<input type="number" value={selected.rotation ?? 0} onChange={(event) => updateLayer(selected.id, { rotation: Number(event.target.value) })} /></label><label>Scale<input type="number" min="0.1" max="5" step="0.01" value={selected.scale ?? 1} onChange={(event) => updateLayer(selected.id, { scale: Math.max(.1, Number(event.target.value)) })} /></label></div>
         </section>
         <section className="inspector-section" aria-label="Layer">
@@ -536,5 +603,5 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
         </section>
       </> : <p>Select an image or video layer to edit it.</p>}
     </aside>
-  </div>{notice && <p className="editor-notice">{notice}</p>}</main>
+  </div>{notice && <p className="editor-notice">{notice}</p>}{mediaPickerOpen && selected && (selected.type === 'image' || selected.type === 'video') && <MediaLibrary mode="picker" allowedType={selected.type} onSelect={selectMediaAsset} onClose={() => setMediaPickerOpen(false)} />}</main>
 }

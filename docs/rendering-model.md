@@ -2,6 +2,29 @@
 
 `src/lib/wallGeometry.ts` defines the coordinate rules; `src/rendering/ScenePreview.tsx` projects them into browser viewports. Geometry changes can break cross-display alignment and legacy scenes, so do not casually rewrite this module. See `tests/wallGeometry.test.mjs`, `/tests/rendering.html` and [display calibration](display-calibration.md).
 
+## Versioned geometry contract
+
+Geometry version 1 remains the active editor and renderer described below. PIXEL-01 does not change its percentages, fixed workspace, player crop, or saved layer JSON.
+
+Geometry version 2 is a persisted contract for later renderer/editor work. A V2 scene references a wall and stores its authoritative virtual canvas width and height in pixels plus the wall-geometry revision used to create it. `src/lib/virtualWallGeometry.ts` derives a normalized virtual plane in two explicit modes:
+
+- Resolution mode maps pixel-layout rectangles directly into virtual pixels.
+- Physical mode multiplies every measured millimetre rectangle by one wall-wide `virtualPixelsPerMm`. A physically larger display therefore keeps a proportionally larger virtual region regardless of its Chromium viewport resolution.
+
+Runtime viewport pixels remain separate from device virtual regions. Negative positions and gaps are retained while the resulting virtual wall is normalized to origin. Physical and resolution inputs cannot be silently mixed. The geometry revision fingerprints layout mode, physical calibration and device layout rectangles, while excluding viewport resolution and unrelated metadata.
+
+`ScenePreview` selects an explicit renderer from `geometry_version`: missing/1 uses the unchanged V1 percentage path, while 2 requires a valid persisted canvas, matching geometry revision and PIXEL-01 virtual-wall result. PIXEL-03A gives the dashboard an explicit V2 creation action and the editor a separate virtual-pixel path; legacy creation and V1 editing remain available without conversion.
+
+## V2 shared virtual-pixel plane
+
+A V2 wall layer must use `space: 'wall'` and `coordinateSpace: 'virtual-pixel'`; its `x`, `y`, `width` and `height` are absolute positions on the persisted pixel canvas. The renderer creates one canvas-sized plane. For a device region `(rx, ry, rw, rh)` and measured browser viewport `(vw, vh)`, it applies `scaleX = vw / rw`, `scaleY = vh / rh`, and translation `(-rx * scaleX, -ry * scaleY)`. The player clips that transformed shared plane to its viewport.
+
+This mapping deliberately permits different horizontal and vertical output scales. A runtime viewport controls output raster density only: it never changes a device's virtual footprint. Physical mode therefore preserves calibrated size ratios even when displays report equal resolutions, and equal physical footprints stay equal when resolutions differ. Normalized region coordinates are consumed directly, with no second origin adjustment. Empty areas between regions remain true bezel/gap space and appear on no player; a layer crossing device boundaries remains continuous because every device crops the same virtual coordinates.
+
+V2 does not reinterpret unsupported screen-local or legacy-coordinate layers. Missing canvas data, malformed/invalid virtual geometry, a stale geometry revision, a canvas/wall size mismatch, a missing current-device region, or an unsupported layer geometry produces a concise safe diagnostic instead of falling back to percentages. Media object-fit, transforms, opacity, z-order, synchronized video and live-stream selection remain shared by both paths. Existing container-relative text sizing is retained intentionally; pixel-native typography editing belongs with later V2 editor work.
+
+In the V2 editor, the persisted canvas is the logical workspace and zoom/pan are transient view state. Device outlines come directly from the current PIXEL-01 normalized regions, while layer positions and dimensions remain stored as virtual pixels. Fit canvas frames the entire persisted canvas rather than recomputing its size from current devices. A changed wall-geometry revision produces a warning but does not rewrite the canvas or layer geometry.
+
 ## Rectangles and selection
 
 - `WORKSPACE` is a fixed `{x: 0, y: 0, width: 7680, height: 4320}` reference plane. Layer `x`, `y`, `width` and `height` are percentages of their selected reference rectangle.

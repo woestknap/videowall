@@ -5,6 +5,7 @@ import { ScenePreview } from '../rendering/ScenePreview'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage, type LiveSessionLease } from '../signalingProtocol'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { recoveryDelayMs } from '../lib/recovery'
+import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, type VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
 
@@ -29,6 +30,7 @@ export function Player() {
   const [status, setStatus] = useState('Enter the PIN shown in the admin dashboard.')
   const [serverEpochOffsetMs, setServerEpochOffsetMs] = useState(() => Date.now() - performance.now())
   const [wallDevices, setWallDevices] = useState<Device[]>([])
+  const [virtualWallGeometry, setVirtualWallGeometry] = useState<VirtualWallGeometryResult | null>(null)
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
   const [liveSession, setLiveSession] = useState<LiveSessionLease | null>(null)
   const liveSessionRef = useRef<LiveSessionLease | null>(null)
@@ -84,6 +86,7 @@ export function Player() {
       if (data?.scene) setScene({ ...data.scene, layers: data.scene.layers as SceneLayer[] })
       else setScene(null)
       if (data?.devices) setWallDevices(data.devices as Device[])
+      setVirtualWallGeometry(parseVirtualWallGeometry(data?.virtual_wall_geometry))
       if (data?.scene_started_at) setSceneStartedAtMs(new Date(data.scene_started_at).getTime())
       const discovered = data?.live_session as LiveSessionLease | null | undefined
       setLiveSession(discovered && new Date(discovered.expiresAt).getTime() > Date.now() ? discovered : null)
@@ -275,5 +278,13 @@ export function Player() {
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
   if (safeMode) return <main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>Videowall player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main>
-  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} />{debug && <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\nstatus: ${status}\nsignaling: ${signalingStatus}\nWebRTC: ${webRtcConnectionState}\nICE: ${iceConnectionState}\nremote video track: ${hasRemoteVideoTrack ? 'yes' : 'no'}\nvideos disabled: ${videosDisabled}\nraw video: ${rawVideos}`}</pre>}</> : <main className="player-message">{status}{debug && <small>{` · signaling: ${signalingStatus} · WebRTC: ${webRtcConnectionState} · ICE: ${iceConnectionState} · remote video: ${hasRemoteVideoTrack ? 'yes' : 'no'}`}</small>}</main>
+  const geometryVersion = scene ? sceneGeometryVersion(scene) : null
+  const v2Contract = scene && geometryVersion === 2 ? validateV2SceneRender(scene, virtualWallGeometry, device.id) : null
+  const currentVirtualRegion = virtualWallGeometry?.status === 'valid' ? virtualWallGeometry.devices.find(region => region.deviceId === device.id) : undefined
+  const geometryDebug = scene
+    ? `geometry version: ${geometryVersion}\nvirtual canvas: ${scene.canvas_width_px ?? '-'}×${scene.canvas_height_px ?? '-'}\nvirtual region: ${currentVirtualRegion ? `${currentVirtualRegion.xPx},${currentVirtualRegion.yPx} ${currentVirtualRegion.widthPx}×${currentVirtualRegion.heightPx}` : '-'}\nviewport: ${innerWidth}×${innerHeight}\ngeometry status: ${v2Contract?.status === 'invalid' ? v2Contract.reason : (virtualWallGeometry?.status ?? '-')}`
+    : ''
+  const debugPanel = debug && scene ? <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\n${geometryDebug}\nstatus: ${status}\nsignaling: ${signalingStatus}\nWebRTC: ${webRtcConnectionState}\nICE: ${iceConnectionState}\nremote video track: ${hasRemoteVideoTrack ? 'yes' : 'no'}\nvideos disabled: ${videosDisabled}\nraw video: ${rawVideos}`}</pre> : null
+  if (scene && v2Contract?.status === 'invalid') return <><main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
+  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} />{debugPanel}</> : <main className="player-message">{status}{debug && <small>{` · signaling: ${signalingStatus} · WebRTC: ${webRtcConnectionState} · ICE: ${iceConnectionState} · remote video: ${hasRemoteVideoTrack ? 'yes' : 'no'}`}</small>}</main>
 }
