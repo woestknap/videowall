@@ -9,11 +9,14 @@
     "check": "tsc -b --pretty false",
     "signaling": "node --env-file-if-exists=.env server/signaling/index.js",
     "test:signaling": "node --test tests/signaling.test.mjs tests/signalingConfig.test.mjs",
+    "test:media": "node --experimental-strip-types --test tests/mediaBackend.test.mjs tests/manualR2Upload.test.mjs",
     "test:recovery": "node --experimental-strip-types --test tests/recovery.test.mjs",
     "test:geometry": "node --test tests/wallGeometry.test.mjs tests/editorZoom.test.mjs tests/editorGuideCss.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/s3-request-presigner": "^3.1141.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/roboto": "^5.3.0",
     "@fontsource/source-serif-4": "^5.3.0",

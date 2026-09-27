@@ -28,6 +28,7 @@ export type SceneLayer = {
   sourceWidth?: number
   sourceHeight?: number
   content: {
+    mediaAssetId?: string
     url?: string
     liveSourceId?: string
     text?: string

@@ -45,3 +45,10 @@ These are planned tasks, not claims that future behavior already exists. Each it
 
 - Consider multiple live sources, screen capture, an RTSP/network ingest gateway and OBS-style inputs. Acceptance: each source kind has an independently validated capture and playback path before wall integration.
 - Revisit stream topology if the player count grows. Acceptance: measured browser-to-many-Pi costs justify a specific change; no SFU is assumed for V1.
+
+## Production and media delivery
+
+- **PROD-02 — Hosted signaling (complete):** the production signaling process, authenticated session path, exact-origin policy and stable hosted endpoint are established.
+- **MEDIA-01 — Reusable media library (active):** MEDIA-01A adds the Supabase catalog and the authenticated Cloudflare R2 control plane. The media-library browser UI, direct browser upload flow and asset selection remain in later MEDIA-01 work.
+- **MEDIA-02 — Local FFmpeg converters (next):** define repeatable local/NAS conversion presets for playback-ready files before they enter R2. Transcoding does not run in Railway or R2.
+- **LIVE-09 — Later:** continue live-input work only after the media-library and conversion phases; scope it independently without coupling stored media to live transport.

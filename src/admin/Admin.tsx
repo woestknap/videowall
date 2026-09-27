@@ -3,6 +3,7 @@ import { isConfigured, supabase } from '../lib/supabase'
 import { bounds, deviceRect } from '../lib/wallGeometry'
 import { ScenePreview } from '../rendering/ScenePreview'
 import type { Device, Scene, SceneLayer, Wall } from '../types'
+import { R2UploadTestPanel } from './R2UploadTestPanel'
 
 const starterScene: Scene = {
   id: 'preview', name: 'Welcome', duration_seconds: 60,
@@ -138,6 +139,7 @@ export function Admin() {
       <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} /></article>
       <article className="panel dashboard-screens-panel"><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>Layout</h2></div><span>{devices.length} screens</span></div>{devices.length ? <><WallLayoutOverview devices={devices} /><div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><button className="secondary" onClick={() => void createScene()}>+ Scene</button></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
+      <R2UploadTestPanel />
     </section>
   </main>
 }

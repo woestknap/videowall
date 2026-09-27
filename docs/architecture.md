@@ -9,7 +9,8 @@
 | `src/editor/SceneEditorPage.tsx`, `src/ScreenLayoutControls.tsx` | Scene/device loading and saving, media upload, canvas interactions, inspector and screen measurements. Canvas and inspector still share one component. |
 | `src/player/Player.tsx` | Pairing, local token, clock calibration, polling, heartbeat, kiosk refresh and diagnostic modes. |
 | `src/rendering/` | `ScenePreview` viewport/cropping, `Layer` media selection, `SyncedVideo` playback correction, `Clock` display. |
-| `src/lib/`, `src/types.ts` | Supabase client; wall geometry and editor zoom helpers; shared data types. |
+| `src/lib/`, `src/types.ts` | Supabase client; wall geometry and editor zoom helpers; shared data types, including optional reusable media references. |
+| `server/media/` | Authenticated, server-only R2 upload signing and scoped object deletion alongside the signaling HTTP listener. It never proxies media bytes. |
 
 Normal root URL opens the admin dashboard after authentication; `?editor=<scene-id>` opens the editor after the same gate. `?player=1` runs the kiosk player without an admin session. If Supabase is unconfigured, the dashboard shows a configuration warning and the player shows a configuration message.
 
@@ -19,6 +20,7 @@ Normal root URL opens the admin dashboard after authentication; `?editor=<scene-
 - `scenes.layers` is JSONB; `device_ids` selects scene participants. Device layout fields hold wall rectangles in either measured units or viewport-based units. `wall_state` stores `active_scene_id`, `playback_mode` and `changed_at`. The current player-state RPC reads the active scene and change time; it does not branch on `playback_mode`. The dashboard publishes with `playback_mode: 'manual'`.
 - Admin creates a PIN through `create_pairing_pin`. The player claims it through `claim_pairing_pin`, which creates a device and returns its ID and token. Token-authenticated `get_player_state` returns the current scene, wall device rectangles and scene start time; `player_heartbeat` updates presence/viewport (and automatic dimensions). `get_server_time` supplies the clock calibration endpoint.
 - The editor uploads files to the public `media` storage bucket and puts the returned URL into a layer only in browser state until the scene is saved. Players read public media URLs without an admin session.
+- `media_assets` is the reusable catalog for playback-ready files stored in Cloudflare R2. Layers may carry both `mediaAssetId` and the stable public `url`; URL-only legacy layers and the existing Supabase Storage bucket remain supported. The media-library browser UI is not implemented yet.
 
 The dashboard's selected wall/scene, editor selection, unsaved edits, zoom/pan, notices, pairing form, player status and sampled clock offset are temporary browser state. The player keeps `{id, token}` in `localStorage` under `videowall-device`; the corresponding device/token record persists in Supabase. A saved scene is not live merely because it was edited: publishing updates `wall_state`.
 
@@ -30,3 +32,5 @@ The dashboard's selected wall/scene, editor selection, unsaved edits, zoom/pan, 
 See [rendering model](rendering-model.md) for coordinate details and [kiosk guide](raspberry-pi-kiosk.md) for OS-level recovery.
 
 Live input uses the dedicated authenticated WSS service described in [live input design](live-input-design.md). In production, a Cloudflare named tunnel exposes that signaling service at a stable hostname; it carries signaling only, while WebRTC media travels directly between the editor and each Pi. Deployment and environment ownership are documented in [production signaling deployment](production-signaling.md).
+
+The same Node process exposes authenticated media control endpoints, while browser-to-R2 uploads and R2-to-player downloads stay direct. See [media library and Cloudflare R2](media-library.md) for the trust and storage boundaries.

@@ -23,6 +23,10 @@ The player first shows a PIN form. Pair it once, then its local device token is 
 
 Local live-input development can use a directly reachable `ws://` laptop address. Production uses a stable `wss://` hostname through a Cloudflare named tunnel while WebRTC media continues directly between the editor and each Pi. See [production signaling deployment](docs/production-signaling.md) for environment separation, startup order, Pages configuration, security boundaries and troubleshooting.
 
+## Media library backend
+
+The reusable media catalog stores metadata in Supabase and playback-ready objects in Cloudflare R2. The Railway service only authenticates and signs control operations; uploads go directly from the browser to R2. Existing Supabase Storage URLs remain supported. See [media library and Cloudflare R2](docs/media-library.md) for configuration and security boundaries.
+
 ## Screen alignment and mixed sizes
 
 See [display calibration](docs/display-calibration.md) for the 150 × 85 mm Pi panels,

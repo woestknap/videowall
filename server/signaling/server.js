@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { createServer } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { errorMessage, MAX_SIGNALING_MESSAGE_BYTES, parseClientMessage, SIGNALING_VERSION } from './protocol.js'
 
@@ -31,10 +32,15 @@ function scopedMessage(scope, type, payload) {
   return { version: SIGNALING_VERSION, type, sessionId: scope.sessionId, liveSourceId: scope.liveSourceId, targetDeviceId: scope.targetDeviceId, generation: scope.generation, payload }
 }
 
-export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publicUrl, allowedOrigins = [], maxConnections = 200, maxSessions = 100, now = () => Date.now() }) {
+export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publicUrl, allowedOrigins = [], maxConnections = 200, maxSessions = 100, now = () => Date.now(), requestHandler }) {
   const sessions = new Map()
   const sockets = new Set()
-  const wss = new WebSocketServer({ port, host, maxPayload: MAX_SIGNALING_MESSAGE_BYTES })
+  const httpServer = createServer(requestHandler ?? ((_request, response) => {
+    response.writeHead(426, { 'Content-Type': 'text/plain; charset=utf-8', Upgrade: 'websocket' })
+    response.end('Upgrade Required')
+  }))
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_SIGNALING_MESSAGE_BYTES })
+  httpServer.listen(port, host)
 
   function send(socket, message) {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
@@ -184,12 +190,14 @@ export function createSignalingServer({ auth, port = 0, host = '127.0.0.1', publ
 
   return {
     wss,
+    httpServer,
     sessions,
     async close() {
       clearInterval(expiryTimer)
       for (const session of [...sessions.values()]) await endSession(session, 'signaling-error')
       for (const socket of sockets) socket.terminate()
       await new Promise((resolve) => wss.close(resolve))
+      await new Promise((resolve, reject) => httpServer.close(error => error ? reject(error) : resolve()))
     },
   }
 }

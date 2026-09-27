@@ -159,6 +159,16 @@
 .maintenance-action { padding: .35rem .5rem; border: 1px solid #3a475e; border-radius: 5px; background: transparent; color: #aebbd5; font-size: .7rem; font-weight: 650; letter-spacing: 0; text-transform: none; }
 .maintenance-action:hover:not(:disabled) { border-color: #8f5663; color: #ffdce5; }
 .maintenance-action:focus-visible { outline: 2px solid #9bf6d2; outline-offset: 2px; }
+.r2-upload-test-panel { grid-column: 1 / -1; min-height: 0; }
+.r2-upload-test-controls { display: flex; align-items: center; gap: .75rem; margin-bottom: .75rem; }
+.r2-upload-test-controls input { min-width: 0; color: #c7d2e8; }
+.r2-upload-test-panel > small { display: block; color: #99a6c0; }
+.r2-upload-test-error { margin: .8rem 0 0; color: #ffc2cb !important; }
+.r2-upload-test-result { display: grid; gap: .45rem; margin: 1rem 0 0; padding-top: .8rem; border-top: 1px solid #28344c; }
+.r2-upload-test-result div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .65rem; }
+.r2-upload-test-result dt { color: #8d99b7; font-size: .75rem; font-weight: 800; text-transform: uppercase; }
+.r2-upload-test-result dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.r2-upload-test-result a { overflow-wrap: anywhere; }
 .dashboard-grid { grid-template-columns: minmax(0, 1.8fr) minmax(300px, .8fr); align-items: start; gap: 1.25rem; }
 .dashboard-grid .panel { min-width: 0; padding: 1.1rem; border-radius: 10px; }
 .dashboard-preview-panel .scene-preview { width: 100%; }
