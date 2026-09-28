@@ -194,7 +194,7 @@ export function Admin() {
         <article className="panel sm-card dashboard-preview-panel">
           <div className="panel-heading"><div><p className="eyebrow">CURRENT OUTPUT</p><h3>{activeScene.name}</h3></div><button className="sm-button" disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish to wall</button></div>
           <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{activeScene.id === publishedSceneId && <span className="sm-status sm-status-success">Live now</span>}</div>
-          {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed — <a href={`?editor=${activeScene.id}`}>open scene to update</a>.</p> : <ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
+          {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${activeScene.id}`}>open scene to update</a>.</p> : <ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
           <p className="dashboard-current-live">{publishedScene ? activeScene.id === publishedScene.id ? `${publishedScene.name} is currently published on ${selectedWall?.name ?? 'this wall'}.` : <><strong>{publishedScene.name}</strong> is currently live. Publishing will replace it with <strong>{activeScene.name}</strong>.</> : 'No scene is currently published on this wall.'}</p>
         </article>
 
