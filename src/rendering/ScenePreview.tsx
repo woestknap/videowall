@@ -31,7 +31,7 @@ function V1ScenePreview({ scene, player = false, deviceId, devices = [], serverE
   const view = player && current ? deviceRect(current) : activeDevices.length ? bounds(activeDevices.map(deviceRect)) : WORKSPACE
   const excluded = player && deviceId && scene.device_ids?.length && !scene.device_ids.includes(deviceId)
   const layers = excluded ? [] : scene.layers.filter(layer => (!deviceId || !layer.target.length || layer.target.includes(deviceId)) && (!videosDisabled || (layer.type !== 'video' && layer.type !== 'live')))
-  return <div ref={root} className={player ? 'player-canvas' : 'scene-preview'} style={player ? { position: embedded ? 'relative' : 'fixed', inset: 0, width: embedded ? '100%' : '100vw', height: embedded ? '100%' : '100vh', overflow: 'hidden', background: '#000' } : { aspectRatio: `${view.width} / ${view.height}` }}>
+  return <div ref={root} className={player ? 'player-canvas' : 'scene-preview screenmesh-workspace-grid'} style={player ? { position: embedded ? 'relative' : 'fixed', inset: 0, width: embedded ? '100%' : '100vw', height: embedded ? '100%' : '100vh', overflow: 'hidden', background: '#000' } : { aspectRatio: `${view.width} / ${view.height}` }}>
     {!player && activeDevices.length ? activeDevices.map(device => {
       const box = deviceRect(device)
       return <div key={device.id} style={{ position: 'absolute', left: `${(box.x - view.x) / view.width * 100}%`, top: `${(box.y - view.y) / view.height * 100}%`, width: `${box.width / view.width * 100}%`, height: `${box.height / view.height * 100}%` }}>
@@ -74,7 +74,7 @@ function V2ScenePreview({ scene, player = false, deviceId, virtualWallGeometry, 
     ? { position: embedded ? 'relative' as const : 'fixed' as const, inset: 0, width: embedded ? '100%' : '100vw', height: embedded ? '100%' : '100vh', overflow: 'hidden', background: '#000' }
     : { aspectRatio: `${contract.canvas.width} / ${contract.canvas.height}` }
 
-  return <div ref={root} className={player ? 'player-canvas' : 'scene-preview'} data-geometry-version="2" style={rootStyle}>
+  return <div ref={root} className={player ? 'player-canvas' : 'scene-preview screenmesh-workspace-grid'} data-geometry-version="2" style={rootStyle}>
     {!player ? regions.map(region => <div key={region.deviceId} style={{ position: 'absolute', left: `${region.xPx / contract.canvas.width * 100}%`, top: `${region.yPx / contract.canvas.height * 100}%`, width: `${region.widthPx / contract.canvas.width * 100}%`, height: `${region.heightPx / contract.canvas.height * 100}%` }}>
       <V2ScenePreview scene={scene} deviceId={region.deviceId} player embedded virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={onMediaStateChange} />
     </div>) : transform && <div className="layer-plane" data-virtual-plane style={{ position: 'absolute', left: 0, top: 0, width: contract.canvas.width, height: contract.canvas.height, transformOrigin: '0 0', transform: transform.cssTransform }}>
