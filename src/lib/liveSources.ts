@@ -2,6 +2,10 @@ import type { Device, SceneLayer } from '../types'
 
 export type LiveSourceSummary = { id: string; name: string; layerIds: string[]; targetDeviceIds: string[] }
 
+export function liveSourceIdForLayer(layer: SceneLayer | null | undefined) {
+  return layer?.type === 'live' ? layer.content.liveSourceId ?? null : null
+}
+
 export function liveSourcesForLayers(layers: SceneLayer[], sceneDevices: Device[]) {
   const sources = new Map<string, LiveSourceSummary>()
   for (const layer of layers) {

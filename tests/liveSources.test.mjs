@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { liveSourcesForLayers, sourceLayersRemain } from '../src/lib/liveSources.ts'
+import { liveSourceIdForLayer, liveSourcesForLayers, sourceLayersRemain } from '../src/lib/liveSources.ts'
 
 const devices = [{ id: 'one' }, { id: 'two' }, { id: 'three' }]
 const live = (id, source, name, target = []) => ({ id, type: 'live', target, x: 0, y: 0, width: 1, height: 1, zIndex: 1, content: { liveSourceId: source, ...(name ? { liveSourceName: name } : {}) } })
@@ -18,4 +18,9 @@ test('removing one shared layer keeps its source while removing the final layer 
   assert.equal(sourceLayersRemain(layers, 'a', 'a1'), true)
   assert.equal(sourceLayersRemain(layers, 'a', 'a2'), true)
   assert.equal(sourceLayersRemain(layers, 'b', 'b'), false)
+})
+
+test('selecting any shared live layer resolves its source while non-live layers do not change source focus', () => {
+  assert.equal(liveSourceIdForLayer(live('a1', 'shared')), 'shared')
+  assert.equal(liveSourceIdForLayer({ id: 'image', type: 'image', content: {} }), null)
 })

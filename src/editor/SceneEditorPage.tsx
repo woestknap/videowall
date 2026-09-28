@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { recoveryDelayMs } from '../lib/recovery'
 import { LiveSessionRegistry, liveSessionKey } from '../lib/liveRuntime'
-import { liveSourcesForLayers, sourceLayersRemain } from '../lib/liveSources'
+import { liveSourceIdForLayer, liveSourcesForLayers, sourceLayersRemain } from '../lib/liveSources'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, newImageLayerSize, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage } from '../signalingProtocol'
@@ -201,6 +201,10 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     fitInitialView()
     return () => observer.disconnect()
   }, [scene, devices, devicesLoaded])
+  useEffect(() => {
+    const sourceId = liveSourceIdForLayer(scene?.layers.find(layer => layer.id === selectedId))
+    if (sourceId && sourceId !== managedLiveSourceId) setManagedLiveSourceId(sourceId)
+  }, [scene, selectedId, managedLiveSourceId])
   if (!scene || !devicesLoaded || (scene.geometry_version === 2 && !sceneWallLoaded)) return <main className="player-message">{notice || 'Loading scene editor…'}</main>
   const isV2 = scene.geometry_version === 2
   const resolvedWallSize = editorSceneCanvas(scene)
