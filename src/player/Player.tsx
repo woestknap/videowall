@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { isConfigured, supabase } from '../lib/supabase'
 import type { Device, Scene, SceneLayer } from '../types'
 import { ScenePreview } from '../rendering/ScenePreview'
@@ -8,6 +8,58 @@ import { recoveryDelayMs } from '../lib/recovery'
 import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, type VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
+
+function PlayerLiveSession({ device, lease, disabled, onStream, onRemove }: { device: { id: string; token: string }; lease: LiveSessionLease; disabled: boolean; onStream: (sourceId: string, stream: MediaStream) => void; onRemove: (sourceId: string) => void }) {
+  const socketRef = useRef<WebSocket | null>(null)
+  const scopeRef = useRef<AuthenticatedMessage | null>(null)
+  const peerRef = useRef<RTCPeerConnection | null>(null)
+  const pendingRef = useRef<PendingIceCandidate[]>([])
+  useEffect(() => {
+    let stopped = false
+    let retries = 0
+    let retryTimer = 0
+    const closePeer = () => { const peer = peerRef.current; peerRef.current = null; pendingRef.current.splice(0); if (peer) { peer.onicecandidate = null; peer.ontrack = null; peer.onconnectionstatechange = null; peer.close() } }
+    const send = <T extends 'answer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'answer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) => {
+      if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
+    }
+    const retry = () => { if (!stopped && new Date(lease.expiresAt).getTime() > Date.now()) retryTimer = window.setTimeout(connect, recoveryDelayMs(retries++)) }
+    function connect() {
+      if (stopped) return
+      let socket: WebSocket
+      try { socket = new WebSocket(lease.signalingUrl) } catch { retry(); return }
+      socketRef.current = socket
+      socket.addEventListener('open', () => { if (!stopped && socketRef.current === socket) socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId: device.id, deviceToken: device.token, sessionId: lease.sessionId })) })
+      socket.addEventListener('message', event => { void (async () => {
+        if (stopped || socketRef.current !== socket || typeof event.data !== 'string') return
+        const message = parseServerSignalingMessage(event.data)
+        if (!message) return
+        if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === lease.sessionId && message.liveSourceId === lease.liveSourceId && message.targetDeviceId === device.id) {
+          scopeRef.current = message
+          retries = 0
+          socket.send(JSON.stringify(scopedClientMessage(message, 'peer-ready', {})))
+        } else if (message.type === 'offer' && !disabled) {
+          const scope = scopeRef.current
+          if (!scope || message.sessionId !== scope.sessionId || message.liveSourceId !== scope.liveSourceId || message.targetDeviceId !== scope.targetDeviceId || message.generation !== scope.generation) return
+          closePeer()
+          const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS)); peerRef.current = peer
+          peer.onicecandidate = event => send(scope, 'ice-candidate', event.candidate ? { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex } : { candidate: null, sdpMid: null, sdpMLineIndex: null })
+          peer.ontrack = event => { if (peer === peerRef.current && event.track.kind === 'video') onStream(scope.liveSourceId, event.streams[0] ?? new MediaStream([event.track])) }
+          peer.onconnectionstatechange = () => { if (peer === peerRef.current && (peer.connectionState === 'failed' || peer.connectionState === 'closed')) { closePeer(); if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(scope, 'peer-ready', {}))) } }
+          await peer.setRemoteDescription({ type: 'offer', sdp: message.payload.sdp }); await flushIceCandidates(peer, pendingRef.current)
+          const answer = await peer.createAnswer(); if (peer !== peerRef.current) return; await peer.setLocalDescription(answer)
+          if (peer.localDescription?.sdp) send(scope, 'answer', { sdp: peer.localDescription.sdp })
+        } else if (message.type === 'ice-candidate') {
+          const scope = scopeRef.current
+          if (scope && message.sessionId === scope.sessionId && message.liveSourceId === scope.liveSourceId && message.targetDeviceId === scope.targetDeviceId && message.generation === scope.generation) await addOrQueueIceCandidate(peerRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingRef.current)
+        } else if (message.type === 'session-ended') { closePeer(); onRemove(lease.liveSourceId); socket.close() }
+      })() })
+      socket.addEventListener('close', () => { if (!stopped && socketRef.current === socket) { socketRef.current = null; retry() } })
+    }
+    connect()
+    return () => { stopped = true; window.clearTimeout(retryTimer); closePeer(); socketRef.current?.close(1000, 'lease-changed'); onRemove(lease.liveSourceId) }
+  }, [device.id, device.token, lease.sessionId, lease.liveSourceId, lease.signalingUrl, lease.expiresAt, disabled, onStream, onRemove])
+  return null
+}
 
 export function Player() {
   useEffect(() => {
@@ -33,6 +85,7 @@ export function Player() {
   const [virtualWallGeometry, setVirtualWallGeometry] = useState<VirtualWallGeometryResult | null>(null)
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
   const [liveSession, setLiveSession] = useState<LiveSessionLease | null>(null)
+  const [liveSessions, setLiveSessions] = useState<LiveSessionLease[]>([])
   const liveSessionRef = useRef<LiveSessionLease | null>(null)
   liveSessionRef.current = liveSession
   const [signalingStatus, setSignalingStatus] = useState('idle')
@@ -46,6 +99,8 @@ export function Player() {
   const [webRtcConnectionState, setWebRtcConnectionState] = useState<RTCPeerConnectionState | 'idle'>('idle')
   const [iceConnectionState, setIceConnectionState] = useState<RTCIceConnectionState | 'idle'>('idle')
   const [hasRemoteVideoTrack, setHasRemoteVideoTrack] = useState(false)
+  const registerLiveStream = useCallback((liveSourceId: string, stream: MediaStream) => setLiveStreams(current => new Map(current).set(liveSourceId, stream)), [])
+  const removeLiveStream = useCallback((liveSourceId: string) => setLiveStreams(current => { current.get(liveSourceId)?.getTracks().forEach(track => track.stop()); const next = new Map(current); next.delete(liveSourceId); return next }), [])
 
   useEffect(() => {
     if (!device || !supabase) return
@@ -88,8 +143,9 @@ export function Player() {
       if (data?.devices) setWallDevices(data.devices as Device[])
       setVirtualWallGeometry(parseVirtualWallGeometry(data?.virtual_wall_geometry))
       if (data?.scene_started_at) setSceneStartedAtMs(new Date(data.scene_started_at).getTime())
-      const discovered = data?.live_session as LiveSessionLease | null | undefined
-      setLiveSession(discovered && new Date(discovered.expiresAt).getTime() > Date.now() ? discovered : null)
+      const discovered = Array.isArray(data?.live_sessions) ? data.live_sessions as LiveSessionLease[] : data?.live_session ? [data.live_session as LiveSessionLease] : []
+      setLiveSessions(discovered.filter(lease => new Date(lease.expiresAt).getTime() > Date.now()))
+      setLiveSession(null)
       setStatus('Connected')
       await client.rpc('player_heartbeat', { requested_device_id: device.id, requested_token: device.token, viewport_width: innerWidth, viewport_height: innerHeight })
     }
@@ -285,6 +341,7 @@ export function Player() {
     ? `geometry version: ${geometryVersion}\nvirtual canvas: ${scene.canvas_width_px ?? '-'}×${scene.canvas_height_px ?? '-'}\nvirtual region: ${currentVirtualRegion ? `${currentVirtualRegion.xPx},${currentVirtualRegion.yPx} ${currentVirtualRegion.widthPx}×${currentVirtualRegion.heightPx}` : '-'}\nviewport: ${innerWidth}×${innerHeight}\ngeometry status: ${v2Contract?.status === 'invalid' ? v2Contract.reason : (virtualWallGeometry?.status ?? '-')}`
     : ''
   const debugPanel = debug && scene ? <pre className="player-debug">{`device: ${device.id}\nscene: ${scene.name}\nlayers: ${scene.layers.length}\nselected for scene: ${!scene.device_ids?.length || scene.device_ids.includes(device.id)}\n${geometryDebug}\nstatus: ${status}\nsignaling: ${signalingStatus}\nWebRTC: ${webRtcConnectionState}\nICE: ${iceConnectionState}\nremote video track: ${hasRemoteVideoTrack ? 'yes' : 'no'}\nvideos disabled: ${videosDisabled}\nraw video: ${rawVideos}`}</pre> : null
-  if (scene && v2Contract?.status === 'invalid') return <><main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
-  return scene ? <><ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} />{debugPanel}</> : <main className="player-message">{status}{debug && <small>{` · signaling: ${signalingStatus} · WebRTC: ${webRtcConnectionState} · ICE: ${iceConnectionState} · remote video: ${hasRemoteVideoTrack ? 'yes' : 'no'}`}</small>}</main>
+  const liveRuntimes = liveSessions.map(lease => <PlayerLiveSession key={lease.sessionId} device={device} lease={lease} disabled={safeMode || videosDisabled} onStream={registerLiveStream} onRemove={removeLiveStream} />)
+  if (scene && v2Contract?.status === 'invalid') return <>{liveRuntimes}<main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
+  return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}{debug && <small>{` · signaling: ${signalingStatus} · WebRTC: ${webRtcConnectionState} · ICE: ${iceConnectionState} · remote video: ${hasRemoteVideoTrack ? 'yes' : 'no'}`}</small>}</main></>
 }

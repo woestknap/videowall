@@ -4,6 +4,7 @@ import { advanceWorkspaceDrag, deltaClientToWorkspace, devicePositionChange, dis
 import { supabase } from '../lib/supabase'
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { recoveryDelayMs } from '../lib/recovery'
+import { LiveSessionRegistry, liveSessionKey } from '../lib/liveRuntime'
 import { WALL_WORKSPACE_HEIGHT, WALL_WORKSPACE_WIDTH, bounds, deviceRect, fitLayerToDevices, newImageLayerSize, sceneDevices, toWorkspaceLayer } from '../lib/wallGeometry'
 import type { Device, Scene, SceneLayer } from '../types'
 import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, type AuthenticatedMessage } from '../signalingProtocol'
@@ -25,8 +26,8 @@ function LiveCameraPreview({ stream }: { stream: MediaStream }) {
   return <video ref={videoRef} className="editor-video" autoPlay muted playsInline />
 }
 
-export function EditorMedia({ layer, onSize, liveStream, liveLayerId }: { layer: SceneLayer; onSize: (width: number, height: number) => void; liveStream?: MediaStream | null; liveLayerId?: string | null }) {
-  if (layer.type === 'live') return liveStream && liveLayerId === layer.id ? <LiveCameraPreview stream={liveStream} /> : <div className="media-placeholder">Live input · preview disabled</div>
+export function EditorMedia({ layer, onSize, liveStreams }: { layer: SceneLayer; onSize: (width: number, height: number) => void; liveStreams?: ReadonlyMap<string, MediaStream> }) {
+  if (layer.type === 'live') { const stream = layer.content.liveSourceId ? liveStreams?.get(layer.content.liveSourceId) : undefined; return stream ? <LiveCameraPreview stream={stream} /> : <div className="media-placeholder">Live input · preview disabled</div> }
   const url = layerPlaybackUrl(layer)
   return layer.type === 'image' && url ? <img style={{ objectFit: layer.content.fit ?? 'cover' }} src={url} alt="" onLoad={event => onSize(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : layer.type === 'video' && url ? <video className="editor-video" style={{ objectFit: layer.content.fit ?? 'cover' }} src={url} autoPlay muted loop playsInline onLoadedMetadata={event => onSize(event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="media-placeholder">{layer.type === 'video' ? '▶ Video source' : '▣ Image source'}</div>
 }
@@ -51,6 +52,8 @@ function layerLabel(layer: SceneLayer): string {
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
 type TargetSignalingState = 'connecting' | 'waiting' | 'connected' | 'recovering' | 'disconnected' | 'error' | 'ended'
 type TargetStatus = {
+  liveSourceId: string
+  sessionKey: string
   deviceId: string
   name: string
   signaling: TargetSignalingState
@@ -100,14 +103,14 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const [spaceHeld, setSpaceHeld] = useState(false)
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedCameraId, setSelectedCameraId] = useState('')
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null)
-  const [cameraLayerId, setCameraLayerId] = useState<string | null>(null)
+  const [cameraStreams, setCameraStreams] = useState<Map<string, MediaStream>>(() => new Map())
+  const [cameraSourceId, setCameraSourceId] = useState<string | null>(null)
   const [cameraError, setCameraError] = useState('')
-  const cameraStreamRef = useRef<MediaStream | null>(null)
+  const cameraStreamsRef = useRef<Map<string, MediaStream>>(new Map())
   const [liveSessionStatus, setLiveSessionStatus] = useState('Session not started')
-  const [liveSessionActive, setLiveSessionActive] = useState(false)
+  const [activeLiveSourceIds, setActiveLiveSourceIds] = useState<Set<string>>(() => new Set())
   const [targetStatuses, setTargetStatuses] = useState<Record<string, TargetStatus>>({})
-  const targetRuntimesRef = useRef<Map<string, TargetRuntime>>(new Map())
+  const targetRuntimesRef = useRef<LiveSessionRegistry<TargetRuntime>>(new LiveSessionRegistry())
   useEffect(() => { if (!supabase) return; void supabase.from('scenes').select('id,name,layers,duration_seconds,device_ids,wall_id,geometry_version,canvas_width_px,canvas_height_px,wall_geometry_revision').eq('id', sceneId).single().then(({ data, error }) => { if (error) return setNotice(error.message); const loaded = { ...data, layers: data.layers as SceneLayer[] }; setScene(loaded); setSelectedId(loaded.layers[0]?.id ?? '') }) }, [sceneId])
   useEffect(() => {
     let cancelled = false
@@ -170,7 +173,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     measure()
     return () => observer.disconnect()
   }, [scene?.id, devicesLoaded])
-  useEffect(() => () => { cameraStreamRef.current?.getTracks().forEach(track => track.stop()) }, [])
+  useEffect(() => () => { cameraStreamsRef.current.forEach(stream => stream.getTracks().forEach(track => track.stop())) }, [])
   useEffect(() => () => stopLiveSession(false), [])
   useEffect(() => {
     if (!scene || !devicesLoaded || initialFitSceneRef.current === scene.id) return
@@ -210,8 +213,12 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const wallContract = v2CurrentWallContract(currentScene, sceneWall, virtualGeometry)
   const hasRevisionMismatch = isV2 && virtualGeometry?.status === 'valid' && currentScene.wall_geometry_revision !== virtualGeometry.geometryRevision
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
+  const selectedLiveSourceId = selected?.type === 'live' ? selected.content.liveSourceId : undefined
+  const cameraStream = selectedLiveSourceId ? cameraStreams.get(selectedLiveSourceId) ?? null : null
+  const liveSessionActive = Boolean(selectedLiveSourceId && activeLiveSourceIds.has(selectedLiveSourceId))
+  const selectedTargetStatuses = Object.values(targetStatuses).filter(status => status.liveSourceId === selectedLiveSourceId)
   const selectedLiveTargets = selected?.type === 'live' ? activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)) : []
-  const connectedTargetCount = Object.values(targetStatuses).filter(status => status.connectionState === 'connected').length
+  const connectedTargetCount = selectedTargetStatuses.filter(status => status.connectionState === 'connected').length
   const layersByStack = currentScene.layers.map((layer, index) => ({ layer, index })).sort((a, b) => b.layer.zIndex - a.layer.zIndex || a.index - b.index)
   const isSceneDevice = (deviceId: string) => !currentScene.device_ids?.length || currentScene.device_ids.includes(deviceId)
   async function listCameras() {
@@ -227,15 +234,18 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
       return []
     }
   }
-  function stopCamera() {
-    cameraStreamRef.current?.getTracks().forEach(track => track.stop())
-    cameraStreamRef.current = null
-    setCameraStream(null)
-    setCameraLayerId(null)
-    if (targetRuntimesRef.current.size) stopLiveSession()
+  function stopCamera(liveSourceId = selectedLiveSourceId) {
+    if (!liveSourceId) return
+    const stream = cameraStreamsRef.current.get(liveSourceId)
+    stream?.getTracks().forEach(track => track.stop())
+    cameraStreamsRef.current.delete(liveSourceId)
+    setCameraStreams(current => { const next = new Map(current); next.delete(liveSourceId); return next })
+    if (cameraSourceId === liveSourceId) setCameraSourceId(null)
+    stopLiveSource(liveSourceId)
   }
-  function updateTargetStatus(deviceId: string, change: Partial<TargetStatus>) {
-    setTargetStatuses(current => current[deviceId] ? { ...current, [deviceId]: { ...current[deviceId], ...change } } : current)
+  function updateTargetStatus(runtime: TargetRuntime, change: Partial<TargetStatus>) {
+    const sessionKey = liveSessionKey({ liveSourceId: runtime.liveSourceId, deviceId: runtime.device.id })
+    setTargetStatuses(current => current[sessionKey] ? { ...current, [sessionKey]: { ...current[sessionKey], ...change } } : current)
   }
   function closeTargetPeer(runtime: TargetRuntime) {
     if (runtime.disconnectGraceTimer !== null) { window.clearTimeout(runtime.disconnectGraceTimer); runtime.disconnectGraceTimer = null }
@@ -254,47 +264,47 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   }
   async function startEditorPeerConnection(runtime: TargetRuntime) {
     const scope = runtime.scope
-    const stream = cameraStreamRef.current
+    const stream = cameraStreamsRef.current.get(runtime.liveSourceId)
     const videoTracks = stream?.getVideoTracks().filter(track => track.readyState === 'live') ?? []
-    if (!scope || !stream || !videoTracks.length) { updateTargetStatus(runtime.device.id, { connectionState: 'failed', signaling: 'recovering' }); return }
+    if (!scope || !stream || !videoTracks.length) { updateTargetStatus(runtime, { connectionState: 'failed', signaling: 'recovering' }); return }
     const current = runtime.peer
     if (current && (current.connectionState === 'connected' || current.connectionState === 'connecting')) return
     closeTargetPeer(runtime)
-    updateTargetStatus(runtime.device.id, { connectionState: 'new', iceConnectionState: 'new' })
+    updateTargetStatus(runtime, { connectionState: 'new', iceConnectionState: 'new' })
     const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS))
     runtime.peer = peer
     peer.onicecandidate = event => {
       try {
         sendWebRtcMessage(runtime, 'ice-candidate', event.candidate ? { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex } : { candidate: null, sdpMid: null, sdpMLineIndex: null })
-      } catch { updateTargetStatus(runtime.device.id, { signaling: 'error' }) }
+      } catch { updateTargetStatus(runtime, { signaling: 'error' }) }
     }
     peer.onconnectionstatechange = () => {
       if (peer !== runtime.peer) return
-      updateTargetStatus(runtime.device.id, { connectionState: peer.connectionState })
+      updateTargetStatus(runtime, { connectionState: peer.connectionState })
       if (peer.connectionState === 'connected') {
         runtime.retryAttempt = 0
         if (runtime.disconnectGraceTimer !== null) { window.clearTimeout(runtime.disconnectGraceTimer); runtime.disconnectGraceTimer = null }
       } else if (peer.connectionState === 'disconnected' && runtime.disconnectGraceTimer === null) {
-        updateTargetStatus(runtime.device.id, { signaling: 'recovering' })
+        updateTargetStatus(runtime, { signaling: 'recovering' })
         runtime.disconnectGraceTimer = window.setTimeout(() => {
           runtime.disconnectGraceTimer = null
           if (runtime.peer !== peer || peer.connectionState !== 'disconnected') return
           closeTargetPeer(runtime)
-          updateTargetStatus(runtime.device.id, { signaling: 'recovering', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
+          updateTargetStatus(runtime, { signaling: 'recovering', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
         }, WEBRTC_DISCONNECT_GRACE_MS)
       } else if (peer.connectionState === 'failed') {
         closeTargetPeer(runtime)
-        updateTargetStatus(runtime.device.id, { signaling: 'recovering', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
+        updateTargetStatus(runtime, { signaling: 'recovering', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
       }
     }
-    peer.oniceconnectionstatechange = () => { if (peer === runtime.peer) updateTargetStatus(runtime.device.id, { iceConnectionState: peer.iceConnectionState }) }
+    peer.oniceconnectionstatechange = () => { if (peer === runtime.peer) updateTargetStatus(runtime, { iceConnectionState: peer.iceConnectionState }) }
     for (const track of videoTracks) peer.addTrack(track, stream)
     const offer = await peer.createOffer()
     if (peer !== runtime.peer) return
     await peer.setLocalDescription(offer)
     if (!peer.localDescription?.sdp) throw new Error('Offer SDP was not created')
     sendWebRtcMessage(runtime, 'offer', { sdp: peer.localDescription.sdp })
-    updateTargetStatus(runtime.device.id, { connectionState: 'connecting' })
+    updateTargetStatus(runtime, { connectionState: 'connecting' })
   }
   function stopTargetRuntime(runtime: TargetRuntime, notifyPeer: boolean) {
     if (runtime.stopped) return
@@ -305,21 +315,22 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     }
     closeTargetPeer(runtime)
     try { runtime.socket?.close(1000, 'controller-stopped') } catch { /* socket may still be connecting */ }
-    if (targetRuntimesRef.current.get(runtime.device.id) === runtime) targetRuntimesRef.current.delete(runtime.device.id)
+    const identity = { liveSourceId: runtime.liveSourceId, deviceId: runtime.device.id }
+    if (targetRuntimesRef.current.get(identity) === runtime) targetRuntimesRef.current.delete(identity)
   }
-  function stopLiveSession(updateUi = true) {
-    const runtimes = [...targetRuntimesRef.current.values()]
+  function stopLiveSource(liveSourceId: string, updateUi = true) {
+    const runtimes = targetRuntimesRef.current.entriesForSource(liveSourceId).map(entry => entry.value)
     for (const runtime of runtimes) stopTargetRuntime(runtime, true)
-    targetRuntimesRef.current.clear()
     if (updateUi) {
-      setTargetStatuses(current => Object.fromEntries(Object.entries(current).map(([id, status]) => [id, { ...status, signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' }])))
-      setLiveSessionActive(false)
+      setTargetStatuses(current => Object.fromEntries(Object.entries(current).map(([id, status]) => [id, status.liveSourceId === liveSourceId ? { ...status, signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' } : status])))
+      setActiveLiveSourceIds(current => { const next = new Set(current); next.delete(liveSourceId); return next })
       setLiveSessionStatus('Session ended')
     }
   }
+  function stopLiveSession(updateUi = true) { for (const sourceId of new Set(targetRuntimesRef.current.entries().map(entry => entry.identity.liveSourceId))) stopLiveSource(sourceId, updateUi) }
   function startTargetSession(device: Device, liveSourceId: string, accessToken: string, signalingUrl: string) {
     const runtime: TargetRuntime = { device, socket: null, scope: null, peer: null, pendingIceCandidates: [], stopped: false, accessToken, signalingUrl, liveSourceId, retryAttempt: 0, retryTimer: null, disconnectGraceTimer: null }
-    targetRuntimesRef.current.set(device.id, runtime)
+    targetRuntimesRef.current.set({ liveSourceId, deviceId: device.id }, runtime)
     const scheduleReconnect = () => {
       if (runtime.stopped || runtime.retryTimer !== null) return
       const delay = recoveryDelayMs(runtime.retryAttempt++)
@@ -328,7 +339,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const connect = () => {
       if (runtime.stopped || runtime.socket?.readyState === WebSocket.OPEN || runtime.socket?.readyState === WebSocket.CONNECTING) return
       let socket: WebSocket
-      updateTargetStatus(device.id, { signaling: runtime.scope ? 'recovering' : 'connecting' })
+      updateTargetStatus(runtime, { signaling: runtime.scope ? 'recovering' : 'connecting' })
       try { socket = new WebSocket(runtime.signalingUrl) } catch { scheduleReconnect(); return }
       runtime.socket = socket
       socket.addEventListener('open', () => {
@@ -338,46 +349,46 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     socket.addEventListener('message', event => { void (async () => {
         if (typeof event.data !== 'string' || runtime.stopped || runtime.socket !== socket) return
       const message = parseServerSignalingMessage(event.data)
-      if (!message) return updateTargetStatus(device.id, { signaling: 'error' })
+      if (!message) return updateTargetStatus(runtime, { signaling: 'error' })
         if (message.type === 'authenticated' && message.role === 'editor') {
           if (runtime.scope && message.sessionId !== runtime.scope.sessionId) return
           runtime.scope = message
           runtime.retryAttempt = 0
-          updateTargetStatus(device.id, { signaling: 'waiting' })
+          updateTargetStatus(runtime, { signaling: 'waiting' })
       } else if (message.type === 'peer-ready') {
-        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId || message.generation !== runtime.scope.generation) return
-        updateTargetStatus(device.id, { signaling: 'connected', peerReady: true })
+        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId || message.generation !== runtime.scope.generation || message.liveSourceId !== runtime.liveSourceId || message.targetDeviceId !== runtime.device.id) return
+        updateTargetStatus(runtime, { signaling: 'connected', peerReady: true })
         await startEditorPeerConnection(runtime)
       } else if (message.type === 'answer') {
-        if (!runtime.peer || message.generation !== runtime.scope?.generation || message.sessionId !== runtime.scope?.sessionId) return
+        if (!runtime.peer || message.generation !== runtime.scope?.generation || message.sessionId !== runtime.scope?.sessionId || message.liveSourceId !== runtime.liveSourceId || message.targetDeviceId !== runtime.device.id) return
         await runtime.peer.setRemoteDescription({ type: 'answer', sdp: message.payload.sdp })
         await flushIceCandidates(runtime.peer, runtime.pendingIceCandidates)
       } else if (message.type === 'ice-candidate') {
-        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId || message.generation !== runtime.scope.generation) return
+        if (!runtime.scope || message.sessionId !== runtime.scope.sessionId || message.generation !== runtime.scope.generation || message.liveSourceId !== runtime.liveSourceId || message.targetDeviceId !== runtime.device.id) return
         const candidate = message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }
         await addOrQueueIceCandidate(runtime.peer, candidate, runtime.pendingIceCandidates)
       } else if (message.type === 'session-ended') {
         if (message.payload.reason === 'player-left') {
           const retainMediaPeer = runtime.peer?.connectionState === 'connected' || runtime.peer?.connectionState === 'disconnected'
-          if (retainMediaPeer) updateTargetStatus(device.id, { signaling: 'waiting' })
+          if (retainMediaPeer) updateTargetStatus(runtime, { signaling: 'waiting' })
           else {
             closeTargetPeer(runtime)
-            updateTargetStatus(device.id, { signaling: 'waiting', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
+            updateTargetStatus(runtime, { signaling: 'waiting', peerReady: false, connectionState: 'idle', iceConnectionState: 'idle' })
           }
         } else {
-          updateTargetStatus(device.id, { signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' })
+          updateTargetStatus(runtime, { signaling: 'ended', peerReady: false, connectionState: 'closed', iceConnectionState: 'closed' })
           stopTargetRuntime(runtime, false)
         }
       } else if (message.type === 'error') {
-        updateTargetStatus(device.id, { signaling: 'recovering' })
+        updateTargetStatus(runtime, { signaling: 'recovering' })
         scheduleReconnect()
       }
-    })().catch(() => { updateTargetStatus(device.id, { signaling: 'recovering', connectionState: 'failed' }); scheduleReconnect() }) })
-      socket.addEventListener('error', () => { if (runtime.socket === socket) updateTargetStatus(device.id, { signaling: 'recovering' }) })
+    })().catch(() => { updateTargetStatus(runtime, { signaling: 'recovering', connectionState: 'failed' }); scheduleReconnect() }) })
+      socket.addEventListener('error', () => { if (runtime.socket === socket) updateTargetStatus(runtime, { signaling: 'recovering' }) })
       socket.addEventListener('close', () => {
         if (runtime.socket !== socket) return
         runtime.socket = null
-        if (!runtime.stopped) { updateTargetStatus(device.id, { signaling: 'recovering' }); scheduleReconnect() }
+        if (!runtime.stopped) { updateTargetStatus(runtime, { signaling: 'recovering' }); scheduleReconnect() }
       })
     }
     connect()
@@ -388,16 +399,19 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const signalingUrl = import.meta.env.VITE_SIGNALING_URL
     if (!targets.length) return setLiveSessionStatus('Select at least one target screen')
     if (!signalingUrl) return setLiveSessionStatus('Signaling URL is not configured')
-    if (cameraLayerId !== selected.id || !cameraStreamRef.current?.getVideoTracks().some(track => track.readyState === 'live')) return setLiveSessionStatus('Enable camera preview for this layer first')
+    if (!cameraStreamsRef.current.get(selected.content.liveSourceId)?.getVideoTracks().some(track => track.readyState === 'live')) return setLiveSessionStatus('Enable camera preview for this layer first')
     const { data, error } = await supabase.auth.getSession()
     if (error || !data.session?.access_token) return setLiveSessionStatus('Sign in again to start signaling')
-    stopLiveSession()
-    const statuses = Object.fromEntries(targets.map(device => [device.id, { deviceId: device.id, name: device.name, signaling: 'connecting' as const, peerReady: false, connectionState: 'idle' as const, iceConnectionState: 'idle' as const }]))
-    setTargetStatuses(statuses)
-    setLiveSessionActive(true)
-    setLiveSessionStatus(`Starting ${targets.length} target${targets.length === 1 ? '' : 's'}`)
-    for (const target of targets) startTargetSession(target, selected.content.liveSourceId, data.session.access_token, signalingUrl)
-    if (!targetRuntimesRef.current.size) { setLiveSessionActive(false); setLiveSessionStatus('Signaling error') }
+    const liveSourceId = selected.content.liveSourceId
+    const wantedDeviceIds = new Set(targets.map(device => device.id))
+    for (const { identity, value } of targetRuntimesRef.current.entriesForSource(liveSourceId)) if (!wantedDeviceIds.has(identity.deviceId)) stopTargetRuntime(value, true)
+    const newTargets = targets.filter(device => !targetRuntimesRef.current.get({ liveSourceId, deviceId: device.id }))
+    const statuses = Object.fromEntries(newTargets.map(device => { const sessionKey = liveSessionKey({ liveSourceId, deviceId: device.id }); return [sessionKey, { liveSourceId, sessionKey, deviceId: device.id, name: device.name, signaling: 'connecting' as const, peerReady: false, connectionState: 'idle' as const, iceConnectionState: 'idle' as const }] }))
+    setTargetStatuses(current => ({ ...current, ...statuses }))
+    setActiveLiveSourceIds(current => new Set(current).add(selected.content.liveSourceId!))
+    setLiveSessionStatus(newTargets.length ? `Starting ${newTargets.length} target${newTargets.length === 1 ? '' : 's'}` : 'Current targets are already live')
+    for (const target of newTargets) startTargetSession(target, liveSourceId, data.session.access_token, signalingUrl)
+    if (!targetRuntimesRef.current.size) { setActiveLiveSourceIds(current => { const next = new Set(current); next.delete(selected.content.liveSourceId!); return next }); setLiveSessionStatus('Signaling error') }
   }
   async function startCamera(requestedCameraId = selectedCameraId) {
     if (!selected || selected.type !== 'live') return
@@ -405,13 +419,15 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     const cameraId = cameras.some(device => device.deviceId === requestedCameraId) ? requestedCameraId : cameras[0]?.deviceId
     if (!cameraId || !navigator.mediaDevices?.getUserMedia) { if (!cameraId) setCameraError('No video inputs found.'); else setCameraError('Camera preview is unavailable in this browser.'); return }
     setSelectedCameraId(cameraId)
-    stopCamera()
+    stopCamera(selected.content.liveSourceId)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: cameraId } }, audio: false })
-      cameraStreamRef.current = stream
-      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamRef.current === stream) { cameraStreamRef.current = null; setCameraStream(null); setCameraLayerId(null); if (targetRuntimesRef.current.size) stopLiveSession(); setCameraError('Camera is no longer available.'); void listCameras() } } })
-      setCameraStream(stream)
-      setCameraLayerId(selected.id)
+      const liveSourceId = selected.content.liveSourceId
+      if (!liveSourceId) return
+      cameraStreamsRef.current.set(liveSourceId, stream)
+      stream.getVideoTracks().forEach(track => { track.onended = () => { if (cameraStreamsRef.current.get(liveSourceId) === stream) { stopCamera(liveSourceId); setCameraError('Camera is no longer available.'); void listCameras() } } })
+      setCameraStreams(current => new Map(current).set(liveSourceId, stream))
+      setCameraSourceId(liveSourceId)
       setCameraError('')
       void listCameras()
     } catch (error) {
@@ -434,7 +450,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
     setScene({ ...currentScene, layers: [...currentScene.layers, layer] })
     setSelectedId(layer.id)
   }
-  function removeSelected() { if (!selected) return; newMediaLayerIdsRef.current.delete(selected.id); if (cameraLayerId === selected.id) stopCamera(); setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
+  function removeSelected() { if (!selected) return; newMediaLayerIdsRef.current.delete(selected.id); if (selected.type === 'live' && selected.content.liveSourceId) stopCamera(selected.content.liveSourceId); setScene({ ...currentScene, layers: currentScene.layers.filter((layer) => layer.id !== selected.id) }); setSelectedId('') }
   function moveLayer(direction: 'up' | 'down') { if (!selected) return; updateLayer(selected.id, { zIndex: Math.max(1, selected.zIndex + (direction === 'up' ? 1 : -1)) }) }
   function toggleTarget(deviceId: string) { if (!selected) return; const target = !selected.target.length ? editorDevices.filter((item) => item.id !== deviceId).map((item) => item.id) : selected.target.includes(deviceId) ? selected.target.filter((id) => id !== deviceId) : [...selected.target, deviceId]; updateLayer(selected.id, { target }) }
   function toggleSceneDevice(deviceId: string) { const current = currentScene.device_ids ?? []; const next = !current.length ? editorDevices.filter((item) => item.id !== deviceId).map((item) => item.id) : current.includes(deviceId) ? current.filter((id) => id !== deviceId) : [...current, deviceId]; setScene({ ...currentScene, device_ids: next.length === editorDevices.length ? [] : next }) }
@@ -546,7 +562,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   function fitScreens() { const stage = stageRef.current, workspace = stageRef.current?.parentElement; if (!stage || !workspace || (!isV2 && !activeDevices.length)) return; const controls = workspace.querySelector<HTMLElement>('.canvas-controls'), hint = workspace.querySelector<HTMLElement>('.canvas-hint'); const fitBounds = isV2 ? { x: 0, y: 0, ...wallSize } : bounds(activeDevices.map(deviceRect)); const fitted = fitEditorView({ bounds: fitBounds, workspace: { width: workspace.clientWidth, height: workspace.clientHeight - (controls?.offsetHeight ?? 0) - (hint?.offsetHeight ?? 0) }, stage: { width: stage.clientWidth, height: stage.clientHeight }, wall: wallSize }); if (fitted) { setView(fitted); setFitZoom(fitted.zoom) } }
   function setMediaSize(layerId: string, sourceWidth: number, sourceHeight: number) { if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) return; const layer = currentScene.layers.find((item) => item.id === layerId); if (!layer || (layer.sourceWidth === sourceWidth && layer.sourceHeight === sourceHeight)) return; if (isV2) { updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight }); return } const target = editorDevices.find((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))), screenSpace = (layer.space ?? 'screen') === 'screen', referenceWidth = screenSpace ? target?.layout_width ?? 1920 : WALL_WORKSPACE_WIDTH, referenceHeight = screenSpace ? target?.layout_height ?? 1080 : WALL_WORKSPACE_HEIGHT; updateLayer(layerId, { sourceWidth, sourceHeight, aspectRatio: sourceWidth / sourceHeight, width: sourceWidth / referenceWidth * 100, height: sourceHeight / referenceHeight * 100 }) }
   function updateDimension(key: 'width' | 'height', value: number) { if (selected) updateLayer(selected.id, mediaDimensionChange(selected, key, value)) }
-  const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} liveStream={cameraStream} liveLayerId={cameraLayerId} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
+  const editorMedia = (layer: SceneLayer) => <EditorMedia layer={layer} liveStreams={cameraStreams} onSize={(width, height) => setMediaSize(layer.id, width, height)} />
   const editorDeviceRect = (item: Device) => isV2 ? virtualDeviceRects.find(rect => rect.deviceId === item.id) ?? null : deviceRect(item)
   const activeDeviceRects = activeDevices.flatMap(device => { const rect = editorDeviceRect(device); return rect ? [{ device, rect }] : [] })
   const rectStyle = (item: Device): CSSProperties => { const rect = editorDeviceRect(item); return rect ? { left: `${rect.x / wallSize.width * 100}%`, top: `${rect.y / wallSize.height * 100}%`, width: `${rect.width / wallSize.width * 100}%`, height: `${rect.height / wallSize.height * 100}%` } : { display: 'none' } }
@@ -593,7 +609,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
         <section className="inspector-section" aria-label="Source">
           <h2>Source</h2>
           <label>Type<select value={selected.type} disabled={selected.type === 'live'} onChange={(event) => updateLayer(selected.id, { type: event.target.value as 'image' | 'video' })}><option value="image">Image</option><option value="video">Video</option>{selected.type === 'live' && <option value="live">Live input</option>}</select></label>
-          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraLayerId === selected.id) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraLayerId === selected.id ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraLayerId === selected.id && <button className="secondary" onClick={stopCamera}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><span>{selectedLiveTargets.length} target{selectedLiveTargets.length === 1 ? '' : 's'} from layer targeting</span><button disabled={!selectedLiveTargets.length} onClick={() => void startLiveSession()}>Start live session</button>{liveSessionActive && <button className="secondary" onClick={() => stopLiveSession()}>End session</button>}</div><small>To change targets while streaming: end the session, save the layer targeting, then start again.</small><p className="live-camera-message">{liveSessionActive ? `${connectedTargetCount}/${Object.keys(targetStatuses).length} targets WebRTC connected` : liveSessionStatus}</p>{Object.values(targetStatuses).map(status => <p className="live-camera-message" key={status.deviceId}><strong>{status.name}</strong> — signaling {status.signaling} · ready {status.peerReady ? 'yes' : 'no'} · WebRTC {status.connectionState} · ICE {status.iceConnectionState}</p>)}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="Legacy or direct URL" /></label><div className="media-source-actions"><button type="button" onClick={() => setMediaPickerOpen(true)}>Choose from library</button><label className="upload-button">Upload new<input type="file" accept={selected.type === 'video' ? 'video/mp4' : 'image/jpeg,image/png,image/webp'} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadNewMedia(file) }} /></label></div>{selected.content.mediaAssetId && <small>Library asset: {selected.content.mediaAssetId}</small>}</>}
+          {selected.type === 'live' ? <><p>Live source: {selected.content.liveSourceId || 'Not assigned'}. This preview stays in this browser.</p><div className="live-camera-controls"><button className="secondary" onClick={() => void listCameras()}>Find cameras</button>{cameraDevices.length > 0 && <label>Camera<select value={selectedCameraId} onChange={(event) => { const nextCameraId = event.target.value; setSelectedCameraId(nextCameraId); if (cameraStream && cameraSourceId === selectedLiveSourceId) void startCamera(nextCameraId) }}>{cameraDevices.map((camera, index) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>}<button onClick={() => void startCamera()}>{cameraStream && cameraSourceId === selectedLiveSourceId ? 'Restart preview' : 'Enable preview'}</button>{cameraStream && cameraSourceId === selectedLiveSourceId && <button className="secondary" onClick={() => stopCamera(selectedLiveSourceId)}>Disable preview</button>}</div>{cameraError && <p className="live-camera-message">{cameraError}</p>}<div className="live-camera-controls"><span>{selectedLiveTargets.length} target{selectedLiveTargets.length === 1 ? '' : 's'} from layer targeting</span><button disabled={!selectedLiveTargets.length} onClick={() => void startLiveSession()}>Start live session</button>{liveSessionActive && selectedLiveSourceId && <button className="secondary" onClick={() => stopLiveSource(selectedLiveSourceId)}>End session</button>}</div><small>To change targets while streaming: end the session, save the layer targeting, then start again.</small><p className="live-camera-message">{liveSessionActive ? `${connectedTargetCount}/${selectedTargetStatuses.length} targets WebRTC connected` : liveSessionStatus}</p>{selectedTargetStatuses.map(status => <p className="live-camera-message" key={status.sessionKey}><strong>{status.name}</strong> — signaling {status.signaling} · ready {status.peerReady ? 'yes' : 'no'} · WebRTC {status.connectionState} · ICE {status.iceConnectionState}</p>)}</> : <><label>Media URL<input type="url" value={selected.content.url ?? ''} onChange={(event) => updateContent('url', event.target.value)} placeholder="Legacy or direct URL" /></label><div className="media-source-actions"><button type="button" onClick={() => setMediaPickerOpen(true)}>Choose from library</button><label className="upload-button">Upload new<input type="file" accept={selected.type === 'video' ? 'video/mp4' : 'image/jpeg,image/png,image/webp'} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void uploadNewMedia(file) }} /></label></div>{selected.content.mediaAssetId && <small>Library asset: {selected.content.mediaAssetId}</small>}</>}
         </section>
         <section className="inspector-section" aria-label="Fit and display">
           <h2>Fit / Display</h2>

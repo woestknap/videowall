@@ -2,7 +2,7 @@
 
 ## Status and boundary
 
-LIVE-05A and LIVE-05B are complete. LIVE-06 implements editor fanout and is ready for multi-Pi hardware acceptance. One editor reuses its video-only camera preview stream across one authenticated, device-scoped `RTCPeerConnection` per targeted player. Each player keeps its received stream in memory by `liveSourceId` and renders it through the normal live-layer geometry. Supabase stores only expiring discovery leases, and the WSS service relays only signaling metadata. TURN and broader recovery remain future work.
+LIVE-05A and LIVE-05B are complete. LIVE-09A generalizes runtime fanout: each independent `(liveSourceId, targetDeviceId)` owns its own camera stream, authenticated device-scoped `RTCPeerConnection`, negotiation and recovery state. A player keeps received streams in memory by `liveSourceId` and renders them through normal live-layer geometry. Supabase stores only expiring discovery leases, and the WSS service relays only signaling metadata; direct P2P media remains unchanged. UI for managing several inputs belongs to LIVE-09B.
 
 A live-source definition and a live session remain different things: scene JSON may identify the source, but it must never contain a `MediaStream`, SDP, ICE candidates, peer connections, player credentials or session secrets.
 
