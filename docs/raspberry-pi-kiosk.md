@@ -128,13 +128,14 @@ this is a dedicated player profile, not a place to save personal passwords.
 The URL file is `~/.config/videowall/kiosk.env`, initially:
 
 ```ini
-KIOSK_URL=https://videowall-3lp.pages.dev/?player=1
+KIOSK_URL=https://screenmesh.app/?player=1
 ```
 
 Use a literal URL, **not Markdown link syntax**. The bracketed URL in the original
 report may just be formatting; if brackets and parentheses are really in autostart,
 correct them. The installer copies `kiosk/launcher.py`, `session-start.sh`, and
-`videowall-kiosk.service` to the corresponding per-user locations. All source files
+`videowall-kiosk.service` to the corresponding per-user locations. It also copies
+`screenmesh-player-config.sh`, the safe update tool described below. All source files
 are in this repository for inspection.
 
 ## How readiness and recovery work
@@ -180,6 +181,52 @@ deliberate writable storage plan for pairing and updates.
 
 ## SSH management and failing-boot evidence
 
+### Update a paired ScreenMesh player
+
+The current production player URL is:
+
+```text
+https://screenmesh.app/?player=1
+```
+
+The existing service is the per-user `videowall-kiosk.service`; its configuration
+is `~/.config/videowall/kiosk.env`. To update an already-paired Pi, use the tool
+installed at `~/.local/lib/videowall/screenmesh-player-config.sh`. SSH in as the
+desktop autologin user that owns the kiosk profile (for example `display`) and run
+it **without `sudo`**. It restarts only that user's kiosk service, never the Pi.
+
+```sh
+~/.local/lib/videowall/screenmesh-player-config.sh status
+~/.local/lib/videowall/screenmesh-player-config.sh set-production
+~/.local/lib/videowall/screenmesh-player-config.sh set-url 'https://screenmesh.app/?player=1'
+~/.local/lib/videowall/screenmesh-player-config.sh enable-debug
+~/.local/lib/videowall/screenmesh-player-config.sh disable-debug
+~/.local/lib/videowall/screenmesh-player-config.sh restart
+~/.local/lib/videowall/screenmesh-player-config.sh rollback
+```
+
+`status` reports the configured URL, whether `debug=1` is present, the service
+state, and the config-file location without printing tokens or secrets. `set-url`
+accepts HTTP(S) URLs and records the prior URL in
+`~/.config/videowall/kiosk.env.previous` before changing it. `rollback` restores
+that one saved URL and restarts the service. Debug commands add or remove only the
+`debug` query parameter, retaining `player=1` and any other diagnostic parameters.
+
+This process preserves the persistent Chromium profile at
+`~/.local/share/videowall/chromium`, including localStorage, the ScreenMesh device
+ID, the pairing token, and the server-side pairing state. Do not use incognito mode,
+change `--user-data-dir`, or delete that profile during an update. The tool resolves
+the home directory from the kiosk account database entry rather than `$HOME` or `~`.
+If it is deliberately invoked through `sudo` from that same user's shell, it validates
+`SUDO_USER`/`SUDO_UID`, keeps the config owned by that user, and talks to that user's
+systemd service. Direct root invocation is rejected rather than guessing a kiosk user.
+
+Recent service logs remain available through:
+
+```sh
+journalctl --user -u videowall-kiosk -b --no-pager -n 200
+```
+
 ```sh
 systemctl --user status videowall-kiosk --no-pager
 journalctl --user -u videowall-kiosk -b --no-pager -n 200
@@ -206,7 +253,7 @@ nmcli general status
 vcgencmd get_throttled
 cat /proc/device-tree/model; echo
 chromium --version
-curl -I 'https://videowall-3lp.pages.dev/?player=1'
+curl -I 'https://screenmesh.app/?player=1'
 ```
 
 Add a phone photo of the screen. Readiness errors identify network/clock or Wayland

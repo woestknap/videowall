@@ -10,7 +10,7 @@ for command in chromium python3 wayland-info systemctl; do
 done
 python3 -c 'import websocket'
 install -d "$HOME/.local/lib/videowall" "$HOME/.config/videowall" "$HOME/.config/systemd/user" "$HOME/.config/labwc"
-install -m 755 launcher.py session-start.sh "$HOME/.local/lib/videowall/"
+install -m 755 launcher.py session-start.sh screenmesh-player-config.sh "$HOME/.local/lib/videowall/"
 install -m 644 videowall-kiosk.service "$HOME/.config/systemd/user/"
 if [ ! -f "$HOME/.config/videowall/kiosk.env" ]; then
     install -m 600 kiosk.env "$HOME/.config/videowall/kiosk.env"

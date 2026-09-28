@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 import websocket
 
-URL = os.environ.get('KIOSK_URL', 'https://videowall-3lp.pages.dev/?player=1')
+URL = os.environ.get('KIOSK_URL', 'https://screenmesh.app/?player=1')
 PROFILE = Path.home() / '.local/share/videowall/chromium'
 HEALTH = """JSON.stringify({
   url: location.href, state: document.readyState,
@@ -91,8 +91,8 @@ def probe(port):
 
 
 def main():
-    if urlsplit(URL).scheme != 'https':
-        raise ValueError('KIOSK_URL must use HTTPS')
+    if urlsplit(URL).scheme not in ('http', 'https'):
+        raise ValueError('KIOSK_URL must use HTTP or HTTPS')
     # Retry conditions, not an assumed boot duration. SSH and desktop stay usable.
     while True:
         notify_watchdog()
