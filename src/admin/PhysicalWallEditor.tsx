@@ -66,7 +66,7 @@ export function PhysicalWallEditor({ wall, devices, geometry, dirty, onChange, o
       <span>Scale: <strong>{wall.virtual_pixels_per_mm ?? 'not set'} virtual px/mm</strong></span>
     </div>
     <p className="physical-wall-caution">All four layout values below are millimetres. Existing legacy X/Y values are not converted automatically; verify them or deliberately reset the positions.</p>
-    <div className="physical-wall-actions"><button className="secondary" onClick={onReset}>Reset physical positions</button><button disabled={!dirty || !rectangles} onClick={onSave}>Save physical layout</button></div>
+    <div className="physical-wall-actions"><button className="sm-button sm-button-secondary" onClick={onReset}>Reset physical positions</button><button className="sm-button" disabled={!dirty || !rectangles} onClick={onSave}>Save physical layout</button></div>
     {visibleBounds && rectangles ? <div className="physical-wall-canvas" ref={canvasRef} style={{ aspectRatio: `${visibleBounds.width} / ${visibleBounds.height}`, width: `min(100%, calc(65vh * ${visibleBounds.width / visibleBounds.height}))` }} onPointerMove={moveDrag} onPointerUp={() => setDrag(null)} onPointerCancel={() => setDrag(null)}>
       {displayDevices.map(({ device, index, rect }) => {
         return <div className={`physical-wall-screen ${drag?.deviceId === device.id ? 'is-dragging' : ''}`} key={device.id} style={{ left: `${(rect.x - visibleBounds.x) / visibleBounds.width * 100}%`, top: `${(rect.y - visibleBounds.y) / visibleBounds.height * 100}%`, width: `${rect.width / visibleBounds.width * 100}%`, height: `${rect.height / visibleBounds.height * 100}%` }} onPointerDown={event => startDrag(event, device)}>

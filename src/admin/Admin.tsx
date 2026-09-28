@@ -47,7 +47,7 @@ function deviceStatus(device: Device) {
 
 function DashboardDeviceRow({ device, index, onRemove }: { device: Device; index: number; onRemove: (device: Device) => void }) {
   const status = deviceStatus(device)
-  return <div className="dashboard-device-row"><span>{index + 1}</span><div><strong>{device.name}</strong><small className={`device-status is-${status.tone}`}>{status.label}</small></div><div className="dashboard-device-maintenance"><span>Maintenance</span><button className="maintenance-action" onClick={() => onRemove(device)}>Remove Pi</button></div></div>
+  return <div className="dashboard-device-row"><span>{index + 1}</span><div><strong>{device.name}</strong><small className={`device-status is-${status.tone}`}>{status.label}</small></div><div className="dashboard-device-maintenance"><span>Maintenance</span><button className="sm-button sm-button-danger maintenance-action" onClick={() => onRemove(device)}>Remove Pi</button></div></div>
 }
 
 export function Admin() {
@@ -56,13 +56,17 @@ export function Admin() {
   const [scenes, setScenes] = useState<Scene[]>([])
   const [activeWall, setActiveWall] = useState<string>('')
   const [selectedSceneId, setSelectedSceneId] = useState<string>('')
+  const [publishedSceneId, setPublishedSceneId] = useState<string>('')
   const [pin, setPin] = useState<string>('')
   const [notice, setNotice] = useState('')
   const [physicalLayoutDirty, setPhysicalLayoutDirty] = useState(false)
   const activeScene = scenes.find((scene) => scene.id === selectedSceneId) ?? scenes[0] ?? starterScene
   const selectedWall = walls.find((wall) => wall.id === activeWall)
+  const publishedScene = scenes.find((scene) => scene.id === publishedSceneId)
   const selectedVirtualGeometry = selectedWall ? virtualGeometryForWall(selectedWall, devices) : null
   const selectedSceneRevisionMismatch = activeScene.geometry_version === 2 && activeScene.wall_id === activeWall && selectedVirtualGeometry?.status === 'valid' && activeScene.wall_geometry_revision !== selectedVirtualGeometry.geometryRevision
+  const recentDeviceCount = devices.filter((device) => deviceStatus(device).tone === 'recent').length
+  const includedDeviceCount = devices.filter((device) => device.included_in_wall !== false).length
 
   useEffect(() => {
     if (!supabase) return
@@ -78,8 +82,9 @@ export function Admin() {
     })()
   }, [])
   useEffect(() => {
-    if (!supabase || !activeWall) return
+    if (!supabase || !activeWall) { setDevices([]); setPublishedSceneId(''); return }
     void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size,included_in_wall').eq('wall_id', activeWall).order('created_at').then(({ data }) => { setDevices(data ?? []); setPhysicalLayoutDirty(false) })
+    void supabase.from('wall_state').select('active_scene_id').eq('wall_id', activeWall).maybeSingle().then(({ data }) => setPublishedSceneId(data?.active_scene_id ?? ''))
   }, [activeWall])
   async function createWall() {
     const name = prompt('Wall name', 'Living room wall')?.trim()
@@ -113,6 +118,7 @@ export function Admin() {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
     if (scene.geometry_version === 2 && scene.wall_id !== activeWall) return setNotice('This virtual-pixel scene belongs to a different wall.')
     const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
+    if (!error) setPublishedSceneId(scene.id)
     setNotice(error ? error.message : `${scene.name} is live.`)
   }
   async function signOut() {
@@ -168,22 +174,62 @@ export function Admin() {
     const remaining = scenes.filter((item) => item.id !== scene.id)
     setScenes(remaining); setSelectedSceneId(remaining[0]?.id ?? ''); setNotice('Scene deleted.')
   }
-  return <main className="admin-shell">
-    <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>ScreenMesh</h1></div><div className="dashboard-header-actions"><a href="?player=1" target="_blank" rel="noreferrer">Open player ↗</a>{supabase && <button className="secondary" onClick={() => void signOut()}>Sign out</button>}</div></header>
+  return <main className="admin-shell screenmesh-light-preview">
+    <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>ScreenMesh</h1></div><div className="dashboard-header-actions"><a className="sm-button sm-button-secondary" href="?player=1" target="_blank" rel="noreferrer">Open player <span aria-hidden="true">↗</span></a>{supabase && <button className="sm-button sm-button-secondary" onClick={() => void signOut()}>Sign out</button>}</div></header>
     {!isConfigured && <div className="alert">Add your Supabase values to <code>.env</code> using <code>.env.example</code>, then apply the migration in <code>supabase/migrations</code>.</div>}
-    <section className="toolbar dashboard-toolbar">
-      <div className="dashboard-wall-picker"><p className="eyebrow">CURRENT WALL</p><label>Wall <select value={activeWall} onChange={(event) => setActiveWall(event.target.value)}><option value="">Select a wall</option>{walls.map((wall) => <option key={wall.id} value={wall.id}>{wall.name}</option>)}</select></label></div>
-      <div className="dashboard-wall-actions"><button className="secondary" onClick={() => void createWall()}>+ Wall</button><button disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button></div>
-      {pin && <div className="pin">PIN <strong>{pin}</strong><small>Open {location.origin}/?player=1</small></div>}
-      <div className="dashboard-wall-maintenance"><span>Maintenance</span><button className="maintenance-action" disabled={!activeWall} onClick={() => void deleteWall()}>Delete wall</button></div>
+    <section className="dashboard-section dashboard-wall-section" aria-labelledby="current-wall-heading">
+      <div className="dashboard-section-heading"><div><p className="eyebrow">CONTROL CONTEXT</p><h2 id="current-wall-heading">Current wall</h2></div><p>Choose the display wall you want to operate.</p></div>
+      <div className="toolbar dashboard-toolbar sm-card sm-card-alt">
+        <label className="dashboard-wall-picker sm-field">Wall<select value={activeWall} onChange={(event) => setActiveWall(event.target.value)}><option value="">Select a wall</option>{walls.map((wall) => <option key={wall.id} value={wall.id}>{wall.name}</option>)}</select></label>
+        <div className="dashboard-wall-actions"><button className="sm-button sm-button-secondary" onClick={() => void createWall()}>+ Add wall</button><button className="sm-button" disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button></div>
+        {pin && <div className="pin"><span>Pairing PIN</span><strong>{pin}</strong><small>Open {location.origin}/?player=1</small></div>}
+        <div className="dashboard-wall-maintenance"><span>Maintenance</span><button className="sm-button sm-button-danger" disabled={!activeWall} onClick={() => void deleteWall()}>Delete wall</button></div>
+      </div>
     </section>
-    {notice && <p className="notice">{notice}</p>}
-    <section className="dashboard-grid">
-      <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div>{selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${activeScene.id}`}>open scene to update</a>.</p> : <ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}</article>
-      <article className={`panel dashboard-screens-panel ${selectedWall?.layout_mode === 'physical' ? 'physical-layout-panel' : ''}`}><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>{selectedWall?.layout_mode === 'physical' ? 'Physical wall calibration' : 'Layout'}</h2></div><span>{devices.length} screens</span></div>{devices.length ? <>{selectedWall?.layout_mode === 'physical' ? <PhysicalWallEditor wall={selectedWall} devices={devices} geometry={selectedVirtualGeometry} dirty={physicalLayoutDirty} onChange={updatePhysicalDevice} onReset={resetPhysicalLayout} onSave={() => void savePhysicalLayout()} /> : <WallLayoutOverview devices={devices} />}<div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
-      <article className="panel dashboard-downloads-panel"><p className="eyebrow">TOOLS</p><h2>ScreenMesh conversion tools</h2><p>Convert videos locally into a playback format optimized for ScreenMesh and Raspberry Pi players.</p><div><a href="/downloads/ScreenMesh-Convert-Windows.zip" download>Download for Windows</a><a href="/downloads/ScreenMesh-Convert-macOS.command" download>Download for macOS</a></div></article>
-      <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><div className="scene-create-actions"><button className="secondary" onClick={() => void createScene(1)}>+ Legacy scene</button><button className="secondary" disabled={!activeWall} onClick={() => void createScene(2)}>+ Virtual-pixel scene</button></div></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s · V{scene.geometry_version ?? 1}</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
-      <MediaLibrary mode="manage" />
+    {notice && <p className="notice" role="status">{notice}</p>}
+
+    <section className="dashboard-section" aria-labelledby="output-scenes-heading">
+      <div className="dashboard-section-heading"><div><p className="eyebrow">DAILY CONTROL</p><h2 id="output-scenes-heading">Current output + scenes</h2></div><p>Preview a scene, edit it, or send it to the selected wall.</p></div>
+      <div className="dashboard-workspace">
+        <article className="panel sm-card dashboard-preview-panel">
+          <div className="panel-heading"><div><p className="eyebrow">CURRENT OUTPUT</p><h3>{activeScene.name}</h3></div><button className="sm-button" disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish to wall</button></div>
+          <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{activeScene.id === publishedSceneId && <span className="sm-status sm-status-success">Live now</span>}</div>
+          {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed — <a href={`?editor=${activeScene.id}`}>open scene to update</a>.</p> : <ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
+          <p className="dashboard-current-live">{publishedScene ? activeScene.id === publishedScene.id ? `${publishedScene.name} is currently published on ${selectedWall?.name ?? 'this wall'}.` : <><strong>{publishedScene.name}</strong> is currently live. Publishing will replace it with <strong>{activeScene.name}</strong>.</> : 'No scene is currently published on this wall.'}</p>
+        </article>
+
+        <article className="panel sm-card scenes dashboard-scenes-panel">
+          <div className="panel-heading"><div><p className="eyebrow">SCENE LIBRARY</p><h3>Scenes</h3></div><div className="scene-create-actions"><button className="sm-button sm-button-secondary" onClick={() => void createScene(1)}>+ Legacy</button><button className="sm-button sm-button-secondary" disabled={!activeWall} onClick={() => void createScene(2)}>+ Virtual-pixel</button></div></div>
+          {scenes.length ? <div className="dashboard-scene-list">{scenes.map((scene) => {
+            const selected = scene.id === activeScene.id
+            const published = scene.id === publishedSceneId
+            return <div className={`dashboard-scene-card ${selected ? 'is-selected' : ''} ${published ? 'is-live' : ''}`} key={scene.id}>
+              <div className="dashboard-scene-card-heading"><button className="scene-select" aria-pressed={selected} onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><div>{selected && <span className="sm-status sm-status-selected">Selected</span>}{published && <span className="sm-status sm-status-success">Live</span>}</div></div>
+              <small>{scene.layers.length} layer{scene.layers.length === 1 ? '' : 's'} · {scene.duration_seconds}s · Geometry V{scene.geometry_version ?? 1}</small>
+              <div className="dashboard-scene-actions"><a className="sm-button sm-button-secondary" href={`?editor=${scene.id}`}>Edit</a><button className="sm-button" onClick={() => void publish(scene)}>Go live</button><button className="sm-button sm-button-danger" onClick={() => void deleteScene(scene)}>Delete</button></div>
+            </div>
+          })}</div> : <p className="dashboard-empty-state">Create your first reusable scene.</p>}
+        </article>
+      </div>
+    </section>
+
+    <section className="dashboard-section dashboard-playlist-section" aria-labelledby="playlists-heading">
+      <div className="dashboard-playlist-copy"><p className="eyebrow">COMING SOON</p><h2 id="playlists-heading">Playlists</h2><p>Playlists will let you rotate scenes automatically and schedule timed playback.</p></div><span className="sm-status sm-status-disabled">Planned</span>
+    </section>
+
+    <section className="dashboard-section" aria-labelledby="devices-heading">
+      <div className="dashboard-section-heading"><div><p className="eyebrow">WALL HEALTH</p><h2 id="devices-heading">Devices + wall setup</h2></div><p>Review player health before opening detailed calibration controls.</p></div>
+      <article className={`panel sm-card dashboard-screens-panel ${selectedWall?.layout_mode === 'physical' ? 'physical-layout-panel' : ''}`}>
+        <div className="dashboard-health-summary"><span><strong>{devices.length}</strong>Total screens</span><span className={recentDeviceCount ? 'is-healthy' : ''}><strong>{recentDeviceCount}</strong>Recently online</span><span><strong>{includedDeviceCount}</strong>Included in wall</span><span><strong>{selectedWall?.layout_mode === 'physical' ? 'Physical' : selectedWall ? 'Viewport' : '—'}</strong>Layout mode</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL SELECTED'}</p><h3>{selectedWall?.layout_mode === 'physical' ? 'Physical wall calibration' : 'Wall layout'}</h3></div><button className="sm-button sm-button-secondary" disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button></div>
+        {devices.length ? <>{selectedWall?.layout_mode === 'physical' ? <PhysicalWallEditor wall={selectedWall} devices={devices} geometry={selectedVirtualGeometry} dirty={physicalLayoutDirty} onChange={updatePhysicalDevice} onReset={resetPhysicalLayout} onSave={() => void savePhysicalLayout()} /> : <WallLayoutOverview devices={devices} />}<div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p className="dashboard-empty-state">Pair a Pi to start building your wall.</p>}
+      </article>
+    </section>
+
+    <section className="dashboard-section dashboard-media-section" aria-label="Media Library"><MediaLibrary mode="manage" /></section>
+
+    <section className="dashboard-section dashboard-tools-section" aria-labelledby="tools-heading">
+      <article className="panel sm-card sm-card-alt dashboard-downloads-panel"><div><p className="eyebrow">TOOLS</p><h2 id="tools-heading">ScreenMesh conversion tools</h2><p>Convert videos locally into a playback format optimized for ScreenMesh and Raspberry Pi players.</p></div><div className="dashboard-download-actions"><a className="sm-button sm-button-secondary" href="/downloads/ScreenMesh-Convert-Windows.zip" download>Download for Windows</a><a className="sm-button sm-button-secondary" href="/downloads/ScreenMesh-Convert-macOS.command" download>Download for macOS</a></div></article>
     </section>
   </main>
 }
