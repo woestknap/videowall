@@ -11,7 +11,7 @@ import { PhysicalWallEditor } from './PhysicalWallEditor'
 const starterScene: Scene = {
   id: 'preview', name: 'Welcome', duration_seconds: 60,
   layers: [
-    { id: 'welcome', type: 'text', target: [], x: 8, y: 12, width: 84, height: 40, zIndex: 1, content: { text: 'Videowall is ready' } },
+    { id: 'welcome', type: 'text', target: [], x: 8, y: 12, width: 84, height: 40, zIndex: 1, content: { text: 'ScreenMesh is ready' } },
     { id: 'clock', type: 'clock', target: [], x: 8, y: 60, width: 45, height: 24, zIndex: 2, content: { timezone: 'Europe/Amsterdam' } },
   ],
 }
@@ -169,7 +169,7 @@ export function Admin() {
     setScenes(remaining); setSelectedSceneId(remaining[0]?.id ?? ''); setNotice('Scene deleted.')
   }
   return <main className="admin-shell">
-    <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>Videowall</h1></div><div className="dashboard-header-actions"><a href="?player=1" target="_blank" rel="noreferrer">Open player ↗</a>{supabase && <button className="secondary" onClick={() => void signOut()}>Sign out</button>}</div></header>
+    <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>ScreenMesh</h1></div><div className="dashboard-header-actions"><a href="?player=1" target="_blank" rel="noreferrer">Open player ↗</a>{supabase && <button className="secondary" onClick={() => void signOut()}>Sign out</button>}</div></header>
     {!isConfigured && <div className="alert">Add your Supabase values to <code>.env</code> using <code>.env.example</code>, then apply the migration in <code>supabase/migrations</code>.</div>}
     <section className="toolbar dashboard-toolbar">
       <div className="dashboard-wall-picker"><p className="eyebrow">CURRENT WALL</p><label>Wall <select value={activeWall} onChange={(event) => setActiveWall(event.target.value)}><option value="">Select a wall</option>{walls.map((wall) => <option key={wall.id} value={wall.id}>{wall.name}</option>)}</select></label></div>

@@ -332,8 +332,8 @@ export function Player() {
   }
 
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
-  if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">VIDEOWALL PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
-  if (safeMode) return <main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>Videowall player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main>
+  if (!device) return <main className="pairing"><form onSubmit={pair}><p className="eyebrow">SCREENMESH PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main>
+  if (safeMode) return <main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>ScreenMesh player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main>
   const geometryVersion = scene ? sceneGeometryVersion(scene) : null
   const v2Contract = scene && geometryVersion === 2 ? validateV2SceneRender(scene, virtualWallGeometry, device.id) : null
   const currentVirtualRegion = virtualWallGeometry?.status === 'valid' ? virtualWallGeometry.devices.find(region => region.deviceId === device.id) : undefined

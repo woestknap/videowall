@@ -11,6 +11,7 @@ export { ScenePreview } from './rendering/ScenePreview'
 function App() {
   const player = new URLSearchParams(location.search).get('player') === '1'
   const editorSceneId = new URLSearchParams(location.search).get('editor')
+  useEffect(() => { document.title = player ? 'ScreenMesh Player' : editorSceneId ? 'ScreenMesh Editor' : 'ScreenMesh' }, [player, editorSceneId])
   return player ? <Player /> : <AdminGate editorSceneId={editorSceneId} />
 }
 
@@ -24,7 +25,7 @@ function AdminGate({ editorSceneId }: { editorSceneId: string | null }) {
     return () => listener.subscription.unsubscribe()
   }, [])
   if (!isConfigured) return <Admin />
-  if (!ready) return <main className="player-message">Loading Videowall…</main>
+  if (!ready) return <main className="player-message">Loading ScreenMesh…</main>
   return signedIn ? (editorSceneId ? <SceneEditorPage sceneId={editorSceneId} /> : <Admin />) : <SignIn />
 }
 

@@ -1,4 +1,4 @@
-# Raspberry Pi OS videowall kiosk
+# Raspberry Pi OS ScreenMesh kiosk
 
 ## Findings and limits
 

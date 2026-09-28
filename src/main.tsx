@@ -13,7 +13,7 @@ class CrashBoundary extends Component<{ children: ReactNode }, { error: string |
   state = { error: null }
   static getDerivedStateFromError(error: unknown) { return { error: error instanceof Error ? error.message : String(error) } }
   render() {
-    if (this.state.error) return <main style={{ minHeight: '100vh', padding: '2rem', color: '#fff', background: '#111', fontFamily: 'monospace' }}><h1>Videowall player error</h1><pre>{this.state.error}</pre><p>Reload this Pi once. If this remains, send a photo of this message.</p></main>
+    if (this.state.error) return <main style={{ minHeight: '100vh', padding: '2rem', color: '#fff', background: '#111', fontFamily: 'monospace' }}><h1>ScreenMesh player error</h1><pre>{this.state.error}</pre><p>Reload this Pi once. If this remains, send a photo of this message.</p></main>
     return this.props.children
   }
 }

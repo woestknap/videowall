@@ -1,6 +1,6 @@
-# Videowall
+# ScreenMesh
 
-Personal, browser-based videowall controller built around Raspberry Pi kiosk players.
+Personal, browser-based ScreenMesh controller built around Raspberry Pi kiosk players.
 
 ## Local start
 
