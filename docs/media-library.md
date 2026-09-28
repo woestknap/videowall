@@ -44,4 +44,14 @@ Deletion is deliberately object-first: a fresh client-side scan of scene `layers
 
 Because that authorization request is cross-origin, the deployed Railway `SIGNALING_ALLOWED_ORIGINS` must include the editor's exact origin, including `http://localhost:5173` when testing locally. Allowed media preflights return `204` and advertise only `POST`, `DELETE`, `OPTIONS`, `Authorization`, and `Content-Type`; wildcard origins are never used.
 
-FFmpeg conversion remains a local/NAS workflow planned for MEDIA-02. Only playback-ready derivatives belong in R2; originals and masters remain local or on the NAS.
+## Local video conversion
+
+Only playback-ready derivatives belong in R2. Original/master video remains on the user's computer or NAS: ScreenMesh does not upload masters for conversion, proxy files through Railway, run FFmpeg in the cloud, or upload converted files automatically.
+
+The public sign-in page provides direct downloads for [Windows](/downloads/ScreenMesh-Convert-Windows.zip) and [macOS](/downloads/ScreenMesh-Convert-macOS.command). They operate only on files or directories explicitly supplied by the user and write results beside each source in `ScreenMesh Converted/`, using names such as `presentation.screenmesh.mp4`. Existing output names receive a numbered suffix; originals are never overwritten.
+
+Both converters require a local FFmpeg installation that includes `ffprobe`. Windows reports a suggested `winget install Gyan.FFmpeg` route when it is missing. On macOS, install it with `brew install ffmpeg`; after downloading the `.command` file, run `chmod +x ScreenMesh-Convert-macOS.command` once if Finder does not allow it to open.
+
+The ScreenMesh V1 profile is MP4 with H.264 (`libx264`, High profile, Level 4.1), `yuv420p`, medium preset, CRF 20, 12M max rate / 24M buffer, `+faststart`, and an optional AAC audio stream at 160k. It preserves aspect ratio, scales down only to a maximum 1920×1080 even-pixel bounding box, caps output at 30 fps without raising lower frame rates, and does not add audio when the source has none.
+
+Windows: download and extract the ZIP, then drag one or more video files/folders onto the included `.cmd` launcher; it runs the adjacent PowerShell converter. macOS: double-click the `.command` file to choose one video, or run it in Terminal with one or more files/folders. The tools print PASS / FAILED / SKIPPED summaries; folders skip `ScreenMesh Converted` and already converted `.screenmesh.mp4` files. Upload the resulting MP4 from the signed-in Media Library.

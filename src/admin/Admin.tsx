@@ -62,6 +62,7 @@ export function Admin() {
   const activeScene = scenes.find((scene) => scene.id === selectedSceneId) ?? scenes[0] ?? starterScene
   const selectedWall = walls.find((wall) => wall.id === activeWall)
   const selectedVirtualGeometry = selectedWall ? virtualGeometryForWall(selectedWall, devices) : null
+  const selectedSceneRevisionMismatch = activeScene.geometry_version === 2 && activeScene.wall_id === activeWall && selectedVirtualGeometry?.status === 'valid' && activeScene.wall_geometry_revision !== selectedVirtualGeometry.geometryRevision
 
   useEffect(() => {
     if (!supabase) return
@@ -114,6 +115,11 @@ export function Admin() {
     const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
     setNotice(error ? error.message : `${scene.name} is live.`)
   }
+  async function signOut() {
+    if (!supabase) return
+    const { error } = await supabase.auth.signOut()
+    if (error) setNotice(`Could not sign out: ${error.message}`)
+  }
   function updatePhysicalDevice(deviceId: string, change: Partial<Device>) {
     setDevices(current => current.map(device => device.id === deviceId ? { ...device, ...change, auto_size: false } : device))
     setPhysicalLayoutDirty(true)
@@ -163,7 +169,7 @@ export function Admin() {
     setScenes(remaining); setSelectedSceneId(remaining[0]?.id ?? ''); setNotice('Scene deleted.')
   }
   return <main className="admin-shell">
-    <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>Videowall</h1></div><a href="?player=1" target="_blank" rel="noreferrer">Open player ↗</a></header>
+    <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>Videowall</h1></div><div className="dashboard-header-actions"><a href="?player=1" target="_blank" rel="noreferrer">Open player ↗</a>{supabase && <button className="secondary" onClick={() => void signOut()}>Sign out</button>}</div></header>
     {!isConfigured && <div className="alert">Add your Supabase values to <code>.env</code> using <code>.env.example</code>, then apply the migration in <code>supabase/migrations</code>.</div>}
     <section className="toolbar dashboard-toolbar">
       <div className="dashboard-wall-picker"><p className="eyebrow">CURRENT WALL</p><label>Wall <select value={activeWall} onChange={(event) => setActiveWall(event.target.value)}><option value="">Select a wall</option>{walls.map((wall) => <option key={wall.id} value={wall.id}>{wall.name}</option>)}</select></label></div>
@@ -173,8 +179,9 @@ export function Admin() {
     </section>
     {notice && <p className="notice">{notice}</p>}
     <section className="dashboard-grid">
-      <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div><ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} /></article>
+      <article className="panel dashboard-preview-panel"><div className="panel-heading"><div><p className="eyebrow">SELECTED SCENE PREVIEW</p><h2>{activeScene.name}</h2></div><button disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish</button></div>{selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${activeScene.id}`}>open scene to update</a>.</p> : <ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}</article>
       <article className={`panel dashboard-screens-panel ${selectedWall?.layout_mode === 'physical' ? 'physical-layout-panel' : ''}`}><div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL'}</p><h2>{selectedWall?.layout_mode === 'physical' ? 'Physical wall calibration' : 'Layout'}</h2></div><span>{devices.length} screens</span></div>{devices.length ? <>{selectedWall?.layout_mode === 'physical' ? <PhysicalWallEditor wall={selectedWall} devices={devices} geometry={selectedVirtualGeometry} dirty={physicalLayoutDirty} onChange={updatePhysicalDevice} onReset={resetPhysicalLayout} onSave={() => void savePhysicalLayout()} /> : <WallLayoutOverview devices={devices} />}<div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p>Pair a Pi to start building your wall.</p>}</article>
+      <article className="panel dashboard-downloads-panel"><p className="eyebrow">TOOLS</p><h2>ScreenMesh conversion tools</h2><p>Convert videos locally into a playback format optimized for ScreenMesh and Raspberry Pi players.</p><div><a href="/downloads/ScreenMesh-Convert-Windows.zip" download>Download for Windows</a><a href="/downloads/ScreenMesh-Convert-macOS.command" download>Download for macOS</a></div></article>
       <article className="panel scenes"><div className="panel-heading"><h2>Scenes</h2><div className="scene-create-actions"><button className="secondary" onClick={() => void createScene(1)}>+ Legacy scene</button><button className="secondary" disabled={!activeWall} onClick={() => void createScene(2)}>+ Virtual-pixel scene</button></div></div>{scenes.length ? scenes.map((scene) => <div className={`scene-row ${scene.id === activeScene.id ? 'selected' : ''}`} key={scene.id}><button className="scene-select" onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><small>{scene.layers.length} layers · {scene.duration_seconds}s · V{scene.geometry_version ?? 1}</small><a className="edit-link" href={`?editor=${scene.id}`}>Edit</a><button onClick={() => void publish(scene)}>Go live</button><button className="danger" onClick={() => void deleteScene(scene)}>Delete</button></div>) : <p>Create your first reusable scene.</p>}</article>
       <MediaLibrary mode="manage" />
     </section>

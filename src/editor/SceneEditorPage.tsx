@@ -11,7 +11,7 @@ import { MediaLibrary } from '../media/MediaLibrary'
 import { uploadMediaAsset } from '../media/mediaApi'
 import { layerPlaybackUrl, layerWithMediaAsset, mediaDimensionChange, mediaTypeForMime } from '../media/mediaLibraryUtils'
 import type { MediaAsset, Wall } from '../types'
-import { editorLayerRect, editorSceneCanvas, editorSceneSaveValues, editorVirtualDeviceRects, fitVirtualLayerToRegions, moveEditorLayer, newEditorLayer, v2WallGeometryWarning, virtualGeometryForWall } from '../lib/editorSceneGeometry'
+import { editorLayerRect, editorSceneCanvas, editorSceneSaveValues, editorVirtualDeviceRects, fitVirtualLayerToRegions, moveEditorLayer, newEditorLayer, v2CurrentWallContract, v2WallGeometryWarning, virtualGeometryForWall } from '../lib/editorSceneGeometry'
 
 function LiveCameraPreview({ stream }: { stream: MediaStream }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -207,6 +207,8 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const activeDevices = sceneDevices(currentScene, editorDevices)
   const activeVirtualDeviceRects = virtualDeviceRects.filter(rect => activeDevices.some(device => device.id === rect.deviceId))
   const revisionWarning = v2WallGeometryWarning(currentScene, virtualGeometry)
+  const wallContract = v2CurrentWallContract(currentScene, sceneWall, virtualGeometry)
+  const hasRevisionMismatch = isV2 && virtualGeometry?.status === 'valid' && currentScene.wall_geometry_revision !== virtualGeometry.geometryRevision
   const selected = currentScene.layers.find((layer) => layer.id === selectedId) ?? null
   const selectedLiveTargets = selected?.type === 'live' ? activeDevices.filter(device => !selected.target.length || selected.target.includes(device.id)) : []
   const connectedTargetCount = Object.values(targetStatuses).filter(status => status.connectionState === 'connected').length
@@ -438,6 +440,14 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   function toggleSceneDevice(deviceId: string) { const current = currentScene.device_ids ?? []; const next = !current.length ? editorDevices.filter((item) => item.id !== deviceId).map((item) => item.id) : current.includes(deviceId) ? current.filter((id) => id !== deviceId) : [...current, deviceId]; setScene({ ...currentScene, device_ids: next.length === editorDevices.length ? [] : next }) }
   function updateDeviceLayout(deviceId: string, change: Partial<Device>) { if (isV2) return; setDevices((items) => items.map((item) => item.id === deviceId ? { ...item, ...change } : item)); setLayoutDirty(true) }
   async function save() { if (!supabase) return; const { error } = await supabase.from('scenes').update(editorSceneSaveValues(currentScene)).eq('id', currentScene.id); setNotice(error ? error.message : 'Scene saved. Publish it from the dashboard when ready.') }
+  async function updateToCurrentWallLayout() {
+    if (!supabase || !hasRevisionMismatch || wallContract.status !== 'valid') return
+    if (!confirm('The physical wall layout changed. Updating adopts the new screen positions and canvas size. Layer positions and sizes will not be changed.')) return
+    const { error } = await supabase.from('scenes').update(wallContract.values).eq('id', currentScene.id)
+    if (error) return setNotice(error.message)
+    setScene(current => current ? { ...current, ...wallContract.values } : current)
+    setNotice('Scene updated to the current wall layout. Layer positions and sizes were not changed.')
+  }
   async function saveLayout() { if (!supabase) return; const client = supabase; const results = await Promise.all(devices.map(({ id, name, layout_x, layout_y, layout_width, layout_height, auto_size }) => client.from('devices').update({ name, layout_x, layout_y, auto_size, ...(auto_size === false ? { layout_width, layout_height } : {}) }).eq('id', id))); const error = results.find((result) => result.error)?.error; if (error) return setNotice(error.message); setLayoutDirty(false); setNotice('Physical screen layout saved.') }
   function selectMediaAsset(asset: MediaAsset) {
     if (!selected || (selected.type !== 'image' && selected.type !== 'video')) return
@@ -556,7 +566,7 @@ export function SceneEditorPage({ sceneId }: { sceneId: string }) {
   const renderedLayers = isV2
     ? currentScene.layers.map(layer => <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={layerStyle(layer)} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)
     : currentScene.layers.map((layer) => (layer.space ?? 'screen') === 'screen' ? editorDevices.filter((item) => isSceneDevice(item.id) && (!layer.target.length || layer.target.includes(item.id))).map((item) => <div className="screen-layer-clip" key={`${layer.id}-${item.id}`} style={{ ...rectStyle(item), zIndex: layer.zIndex }}><div className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={{ left: `${layer.x}%`, top: `${layer.y}%`, width: `${layer.width}%`, height: `${layer.height}%`, opacity: layer.opacity ?? 1, transform: `rotate(${layer.rotation ?? 0}deg) scale(${layer.scale ?? 1})` }} onPointerDown={(event) => startDrag(event, layer, item)}>{editorMedia(layer)}</div></div>) : <div key={layer.id} className={`canvas-layer ${layer.id === selectedId ? 'selected-layer' : ''}`} style={layerStyle(layer)} onPointerDown={(event) => startDrag(event, layer)}>{editorMedia(layer)}</div>)
-  return <main className="editor-page"><header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>{isV2 ? `Geometry: V2 virtual-pixel · Canvas: ${wallSize.width} × ${wallSize.height} px · Wall revision: ${virtualGeometry?.status === 'valid' && virtualGeometry.geometryRevision === currentScene.wall_geometry_revision ? 'current' : 'changed'}` : 'Scene editor · Legacy V1 geometry'}</p></div><div className="editor-actions"><button className="secondary" disabled={isV2 || !layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header>{revisionWarning && <p className="editor-geometry-warning">{revisionWarning}</p>}<div className="editor-layout">
+  return <main className="editor-page"><header className="editor-header"><a href="/">← Dashboard</a><div><input aria-label="Scene name" value={currentScene.name} onChange={(event) => setScene({ ...currentScene, name: event.target.value })} /><p>{isV2 ? `Geometry: V2 virtual-pixel · Canvas: ${wallSize.width} × ${wallSize.height} px · Wall revision: ${virtualGeometry?.status === 'valid' && virtualGeometry.geometryRevision === currentScene.wall_geometry_revision ? 'current' : 'changed'}` : 'Scene editor · Legacy V1 geometry'}</p></div><div className="editor-actions"><button className="secondary" disabled={isV2 || !layoutDirty} onClick={() => void saveLayout()}>Save screen layout</button><button onClick={() => void save()}>Save scene</button></div></header>{revisionWarning && <section className="editor-geometry-warning"><p>{revisionWarning}</p>{hasRevisionMismatch && wallContract.status === 'valid' && <><p>The physical wall layout changed. Updating adopts the new screen positions and canvas size. Layer positions and sizes will not be changed.</p><button onClick={() => void updateToCurrentWallLayout()}>Update to current wall layout</button></>}</section>}<div className="editor-layout">
     <aside className="editor-toolbar">
       <section className="editor-sidebar-group">
         <div className="editor-sidebar-heading"><p className="eyebrow">SCREENS IN THIS SCENE</p><span>{activeDevices.length} / {editorDevices.length}</span></div>

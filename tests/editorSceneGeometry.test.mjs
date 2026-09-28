@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { clientPointToWorkspace, deltaClientToWorkspace, workspacePointToClient, zoomAroundCursor } from '../src/lib/editorZoom.ts'
-import { editorLayerRect, editorSceneCanvas, editorSceneSaveValues, editorVirtualDeviceRects, fitVirtualLayerToRegions, moveEditorLayer, newEditorLayer, v2SceneCreateValues, v2WallGeometryWarning, virtualGeometryForWall } from '../src/lib/editorSceneGeometry.ts'
+import { editorLayerRect, editorSceneCanvas, editorSceneSaveValues, editorVirtualDeviceRects, fitVirtualLayerToRegions, moveEditorLayer, newEditorLayer, v2CurrentWallContract, v2SceneCreateValues, v2WallGeometryWarning, virtualGeometryForWall } from '../src/lib/editorSceneGeometry.ts'
+import { validateV2SceneRender } from '../src/lib/virtualWallGeometry.ts'
 import { layerWithMediaAsset, mediaDimensionChange } from '../src/media/mediaLibraryUtils.ts'
 
 const wall = { id: 'wall', name: 'Wall', layout_mode: 'resolution', virtual_pixels_per_mm: null }
@@ -140,6 +141,43 @@ test('revision mismatch warns without rewriting canvas or layers', () => {
   const original = structuredClone(scene)
   assert.match(v2WallGeometryWarning(scene, geometry), /Wall geometry has changed/)
   assert.deepEqual(scene, original)
+})
+
+test('V2 update adopts only the current wall contract and restores renderer validity', () => {
+  const changedDevices = [devices[0], { ...devices[1], layout_x: 2600 }]
+  const geometry = virtualGeometryForWall(wall, changedDevices)
+  assert.equal(geometry.status, 'valid')
+  const stale = { ...scene, canvas_width_px: 3700, canvas_height_px: 1080, wall_geometry_revision: 'old-revision' }
+  const originalLayers = JSON.stringify(stale.layers)
+  assert.match(v2WallGeometryWarning(stale, geometry), /Wall geometry has changed/)
+  assert.equal(validateV2SceneRender(stale, geometry).reason, 'wall-geometry-revision-mismatch')
+  const contract = v2CurrentWallContract(stale, wall, geometry)
+  assert.equal(contract.status, 'valid')
+  const updated = { ...stale, ...contract.values }
+  assert.equal(updated.geometry_version, 2)
+  assert.equal(updated.wall_id, 'wall')
+  assert.equal(updated.canvas_width_px, geometry.widthPx)
+  assert.equal(updated.canvas_height_px, geometry.heightPx)
+  assert.equal(updated.wall_geometry_revision, geometry.geometryRevision)
+  assert.equal(JSON.stringify(updated.layers), originalLayers)
+  assert.equal(v2WallGeometryWarning(updated, geometry), null)
+  assert.equal(validateV2SceneRender(updated, geometry).status, 'valid')
+})
+
+test('V2 contract update refuses invalid geometry and leaves V1 unchanged', () => {
+  const invalid = virtualGeometryForWall(wall, [devices[0], { ...devices[1], auto_size: false }])
+  assert.equal(invalid.status, 'invalid')
+  assert.equal(v2CurrentWallContract(scene, wall, invalid).status, 'invalid')
+  const v1 = { ...scene, geometry_version: 1, canvas_width_px: null, canvas_height_px: null }
+  assert.equal(v2CurrentWallContract(v1, wall, virtualGeometryForWall(wall, devices)).status, 'invalid')
+})
+
+test('editor and dashboard expose revision update only for a mismatched V2 scene', () => {
+  const editor = readFileSync(new URL('../src/editor/SceneEditorPage.tsx', import.meta.url), 'utf8')
+  const dashboard = readFileSync(new URL('../src/admin/Admin.tsx', import.meta.url), 'utf8')
+  assert.match(editor, /Update to current wall layout/)
+  assert.match(editor, /Layer positions and sizes will not be changed/)
+  assert.match(dashboard, /Wall layout changed -/)
 })
 
 test('V1 movement and save payload remain percentage based and version-neutral', () => {

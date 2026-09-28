@@ -107,6 +107,21 @@ export function v2WallGeometryWarning(scene: Scene, geometry: VirtualWallGeometr
   return null
 }
 
+export function v2CurrentWallContract(scene: Scene, wall: Wall | null | undefined, geometry: VirtualWallGeometryResult | null | undefined) {
+  if (sceneGeometryVersion(scene) !== 2) return { status: 'invalid' as const, reason: 'Scene is not V2.' }
+  if (!scene.wall_id || wall?.id !== scene.wall_id) return { status: 'invalid' as const, reason: 'Scene wall is unavailable.' }
+  if (geometry?.status !== 'valid') return { status: 'invalid' as const, reason: 'Current wall geometry is invalid.' }
+  if (!Number.isFinite(geometry.widthPx) || geometry.widthPx <= 0 || !Number.isFinite(geometry.heightPx) || geometry.heightPx <= 0 || !geometry.geometryRevision) return { status: 'invalid' as const, reason: 'Current wall contract is incomplete.' }
+  return {
+    status: 'valid' as const,
+    values: {
+      canvas_width_px: geometry.widthPx,
+      canvas_height_px: geometry.heightPx,
+      wall_geometry_revision: geometry.geometryRevision,
+    },
+  }
+}
+
 export function editorSceneSaveValues(scene: Scene) {
   const common = { name: scene.name, layers: scene.layers, duration_seconds: scene.duration_seconds, device_ids: scene.device_ids ?? [] }
   return sceneGeometryVersion(scene) === 2 ? {
