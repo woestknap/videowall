@@ -49,6 +49,7 @@ export type SceneLayer = {
     mediaAssetId?: string
     url?: string
     liveSourceId?: string
+    liveSourceName?: string
     text?: string
     timezone?: string
     fontFamily?: string
