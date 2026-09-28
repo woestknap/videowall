@@ -7,6 +7,8 @@ import { MediaLibrary } from '../media/MediaLibrary'
 import { v2SceneCreateValues, virtualGeometryForWall } from '../lib/editorSceneGeometry'
 import { physicalDeviceSaveValues, resetPhysicalPositions } from '../lib/physicalWallLayout'
 import { PhysicalWallEditor } from './PhysicalWallEditor'
+import { PlaylistManager } from './PlaylistManager'
+import { scenesForWall, selectedSceneIdForWall } from '../lib/playlists'
 
 const starterScene: Scene = {
   id: 'preview', name: 'Welcome', duration_seconds: 60,
@@ -56,15 +58,16 @@ export function Admin() {
   const [scenes, setScenes] = useState<Scene[]>([])
   const [activeWall, setActiveWall] = useState<string>('')
   const [selectedSceneId, setSelectedSceneId] = useState<string>('')
-  const [publishedSceneId, setPublishedSceneId] = useState<string>('')
+  const [liveSceneId, setLiveSceneId] = useState<string>('')
   const [pin, setPin] = useState<string>('')
   const [notice, setNotice] = useState('')
   const [physicalLayoutDirty, setPhysicalLayoutDirty] = useState(false)
-  const activeScene = scenes.find((scene) => scene.id === selectedSceneId) ?? scenes[0] ?? starterScene
   const selectedWall = walls.find((wall) => wall.id === activeWall)
-  const publishedScene = scenes.find((scene) => scene.id === publishedSceneId)
+  const selectedWallScenes = scenesForWall(scenes, activeWall)
+  const selectedScene = selectedWallScenes.find((scene) => scene.id === selectedSceneId) ?? starterScene
+  const liveScene = selectedWallScenes.find((scene) => scene.id === liveSceneId)
   const selectedVirtualGeometry = selectedWall ? virtualGeometryForWall(selectedWall, devices) : null
-  const selectedSceneRevisionMismatch = activeScene.geometry_version === 2 && activeScene.wall_id === activeWall && selectedVirtualGeometry?.status === 'valid' && activeScene.wall_geometry_revision !== selectedVirtualGeometry.geometryRevision
+  const selectedSceneRevisionMismatch = selectedScene.geometry_version === 2 && selectedScene.wall_id === activeWall && selectedVirtualGeometry?.status === 'valid' && selectedScene.wall_geometry_revision !== selectedVirtualGeometry.geometryRevision
   const recentDeviceCount = devices.filter((device) => deviceStatus(device).tone === 'recent').length
   const includedDeviceCount = devices.filter((device) => device.included_in_wall !== false).length
 
@@ -77,14 +80,16 @@ export function Admin() {
       ])
       setWalls(wallData ?? [])
       setScenes((sceneData ?? []).map((scene) => ({ ...scene, layers: scene.layers as SceneLayer[] })))
-      if (sceneData?.[0]) setSelectedSceneId(sceneData[0].id)
       if (wallData?.[0]) setActiveWall(wallData[0].id)
     })()
   }, [])
   useEffect(() => {
-    if (!supabase || !activeWall) { setDevices([]); setPublishedSceneId(''); return }
+    setSelectedSceneId(current => selectedSceneIdForWall(scenes, activeWall, current))
+  }, [activeWall, scenes])
+  useEffect(() => {
+    if (!supabase || !activeWall) { setDevices([]); setLiveSceneId(''); return }
     void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size,included_in_wall').eq('wall_id', activeWall).order('created_at').then(({ data }) => { setDevices(data ?? []); setPhysicalLayoutDirty(false) })
-    void supabase.from('wall_state').select('active_scene_id').eq('wall_id', activeWall).maybeSingle().then(({ data }) => setPublishedSceneId(data?.active_scene_id ?? ''))
+    void supabase.from('wall_state').select('active_scene_id').eq('wall_id', activeWall).maybeSingle().then(({ data }) => setLiveSceneId(data?.active_scene_id ?? ''))
   }, [activeWall])
   async function createWall() {
     const name = prompt('Wall name', 'Living room wall')?.trim()
@@ -114,17 +119,20 @@ export function Admin() {
     if (error) return setNotice(error.message)
     setDevices((current) => current.filter((item) => item.id !== device.id)); setNotice(`${device.name} was removed. It can no longer play this wall until paired again.`)
   }
-  async function publish(scene: Scene) {
+  async function goLive(scene: Scene) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
     if (scene.geometry_version === 2 && scene.wall_id !== activeWall) return setNotice('This virtual-pixel scene belongs to a different wall.')
     const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
-    if (!error) setPublishedSceneId(scene.id)
+    if (!error) setLiveSceneId(scene.id)
     setNotice(error ? error.message : `${scene.name} is live.`)
   }
   async function signOut() {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
     if (error) setNotice(`Could not sign out: ${error.message}`)
+  }
+  function selectPreviewScene(sceneId: string) {
+    setSelectedSceneId(sceneId)
   }
   function updatePhysicalDevice(deviceId: string, change: Partial<Device>) {
     setDevices(current => current.map(device => device.id === deviceId ? { ...device, ...change, auto_size: false } : device))
@@ -172,7 +180,8 @@ export function Admin() {
     const { error } = await supabase.from('scenes').delete().eq('id', scene.id)
     if (error) return setNotice(error.message)
     const remaining = scenes.filter((item) => item.id !== scene.id)
-    setScenes(remaining); setSelectedSceneId(remaining[0]?.id ?? ''); setNotice('Scene deleted.')
+    setScenes(remaining)
+    setSelectedSceneId(selectedSceneIdForWall(remaining, activeWall, selectedSceneId)); setNotice('Scene deleted. Playlist entries using it were removed, and any matching playlist loading-scene setting was cleared.')
   }
   return <main className="admin-shell screenmesh-light-preview">
     <header className="dashboard-header"><div><p className="eyebrow">PERSONAL DISPLAY CONTROL</p><h1>ScreenMesh</h1></div><div className="dashboard-header-actions"><a className="sm-button sm-button-secondary" href="?player=1" target="_blank" rel="noreferrer">Open player <span aria-hidden="true">↗</span></a>{supabase && <button className="sm-button sm-button-secondary" onClick={() => void signOut()}>Sign out</button>}</div></header>
@@ -192,30 +201,32 @@ export function Admin() {
       <div className="dashboard-section-heading"><div><p className="eyebrow">DAILY CONTROL</p><h2 id="output-scenes-heading">Current output + scenes</h2></div><p>Preview a scene, edit it, or send it to the selected wall.</p></div>
       <div className="dashboard-workspace">
         <article className="panel sm-card dashboard-preview-panel">
-          <div className="panel-heading"><div><p className="eyebrow">CURRENT OUTPUT</p><h3>{activeScene.name}</h3></div><button className="sm-button" disabled={!activeWall} onClick={() => void publish(activeScene)}>Publish to wall</button></div>
-          <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{activeScene.id === publishedSceneId && <span className="sm-status sm-status-success">Live now</span>}</div>
-          {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${activeScene.id}`}>open scene to update</a>.</p> : <ScenePreview scene={activeScene} devices={devices} virtualWallGeometry={activeScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
-          <p className="dashboard-current-live">{publishedScene ? activeScene.id === publishedScene.id ? `${publishedScene.name} is currently published on ${selectedWall?.name ?? 'this wall'}.` : <><strong>{publishedScene.name}</strong> is currently live. Publishing will replace it with <strong>{activeScene.name}</strong>.</> : 'No scene is currently published on this wall.'}</p>
+          <div className="panel-heading"><div><p className="eyebrow">CURRENT OUTPUT</p><h3>{selectedScene.name}</h3></div><button className="sm-button" disabled={!activeWall || selectedScene.id === 'preview'} onClick={() => void goLive(selectedScene)}>Go live</button></div>
+          <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{selectedScene.id === liveSceneId && <span className="sm-status sm-status-success">Live now</span>}</div>
+          {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${selectedScene.id}`}>open scene to update</a>.</p> : <ScenePreview key={selectedScene.id} scene={selectedScene} devices={devices} virtualWallGeometry={selectedScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
+          <p className="dashboard-current-live">{liveScene ? selectedScene.id === liveScene.id ? `${liveScene.name} is currently live on ${selectedWall?.name ?? 'this wall'}.` : <><strong>{liveScene.name}</strong> is currently live. Going live will replace it with <strong>{selectedScene.name}</strong>.</> : 'No scene is currently live on this wall.'}</p>
         </article>
 
         <article className="panel sm-card scenes dashboard-scenes-panel">
-          <div className="panel-heading"><div><p className="eyebrow">SCENE LIBRARY</p><h3>Scenes</h3></div><div className="scene-create-actions"><button className="sm-button sm-button-secondary" onClick={() => void createScene(1)}>+ Legacy</button><button className="sm-button sm-button-secondary" disabled={!activeWall} onClick={() => void createScene(2)}>+ Virtual-pixel</button></div></div>
-          {scenes.length ? <div className="dashboard-scene-list">{scenes.map((scene) => {
-            const selected = scene.id === activeScene.id
-            const published = scene.id === publishedSceneId
-            return <div className={`dashboard-scene-card ${selected ? 'is-selected' : ''} ${published ? 'is-live' : ''}`} key={scene.id}>
-              <div className="dashboard-scene-card-heading"><button className="scene-select" aria-pressed={selected} onClick={() => setSelectedSceneId(scene.id)}>{scene.name}</button><div>{selected && <span className="sm-status sm-status-selected">Selected</span>}{published && <span className="sm-status sm-status-success">Live</span>}</div></div>
+          <div className="panel-heading"><div><p className="eyebrow">SCENE LIBRARY</p><h3>Scenes</h3></div><div className="scene-create-actions"><button className="sm-button sm-button-secondary" disabled={!activeWall} onClick={() => void createScene(1)}>+ Legacy</button><button className="sm-button sm-button-secondary" disabled={!activeWall} onClick={() => void createScene(2)}>+ Virtual-pixel</button></div></div>
+          {selectedWallScenes.length ? <div className="dashboard-scene-list">{selectedWallScenes.map((scene) => {
+            const selected = scene.id === selectedSceneId
+            const live = scene.id === liveSceneId
+            return <div className={`dashboard-scene-card ${selected ? 'is-selected' : ''} ${live ? 'is-live' : ''}`} key={scene.id} role="button" tabIndex={0} aria-pressed={selected} aria-label={`Select ${scene.name} for preview`} onClick={() => selectPreviewScene(scene.id)} onKeyDown={(event) => {
+              if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
+              event.preventDefault()
+              selectPreviewScene(scene.id)
+            }}>
+              <div className="dashboard-scene-card-heading"><strong className="scene-select">{scene.name}</strong><div>{selected && <span className="sm-status sm-status-selected">Selected</span>}{live && <span className="sm-status sm-status-success">Live now</span>}</div></div>
               <small>{scene.layers.length} layer{scene.layers.length === 1 ? '' : 's'} · {scene.duration_seconds}s · Geometry V{scene.geometry_version ?? 1}</small>
-              <div className="dashboard-scene-actions"><a className="sm-button sm-button-secondary" href={`?editor=${scene.id}`}>Edit</a><button className="sm-button" onClick={() => void publish(scene)}>Go live</button><button className="sm-button sm-button-danger" onClick={() => void deleteScene(scene)}>Delete</button></div>
+              <div className="dashboard-scene-actions" onClick={(event) => event.stopPropagation()}><a className="sm-button sm-button-secondary" href={`?editor=${scene.id}`}>Edit</a><button className="sm-button" onClick={() => void goLive(scene)}>Go live</button><button className="sm-button sm-button-danger" onClick={() => void deleteScene(scene)}>Delete</button></div>
             </div>
-          })}</div> : <p className="dashboard-empty-state">Create your first reusable scene.</p>}
+          })}</div> : <p className="dashboard-empty-state">No scenes belong to this wall yet. Unassigned legacy scenes are not shown.</p>}
         </article>
       </div>
     </section>
 
-    <section className="dashboard-section dashboard-playlist-section" aria-labelledby="playlists-heading">
-      <div className="dashboard-playlist-copy"><p className="eyebrow">COMING SOON</p><h2 id="playlists-heading">Playlists</h2><p>Playlists will let you rotate scenes automatically and schedule timed playback.</p></div><span className="sm-status sm-status-disabled">Planned</span>
-    </section>
+    <PlaylistManager wallId={activeWall} scenes={scenes} onNotice={setNotice} />
 
     <section className="dashboard-section" aria-labelledby="devices-heading">
       <div className="dashboard-section-heading"><div><p className="eyebrow">WALL HEALTH</p><h2 id="devices-heading">Devices + wall setup</h2></div><p>Review player health before opening detailed calibration controls.</p></div>

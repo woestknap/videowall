@@ -95,3 +95,23 @@ export type Wall = {
   layout_mode?: 'resolution' | 'physical' | null
   virtual_pixels_per_mm?: number | null
 }
+
+export type Playlist = {
+  id: string
+  wall_id: string
+  name: string
+  loop: boolean
+  loading_scene_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type PlaylistItem = {
+  id: string
+  playlist_id: string
+  scene_id: string
+  position: number
+  duration_seconds: number
+  created_at: string
+  updated_at: string
+}

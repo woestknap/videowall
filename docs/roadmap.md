@@ -54,3 +54,11 @@ These are planned tasks, not claims that future behavior already exists. Each it
 - **MEDIA-02 — Local FFmpeg converters (complete):** public Windows and macOS downloads convert explicitly supplied local/NAS video into a documented Pi-friendly MP4 profile before upload. Originals remain local; transcoding does not run in Railway or R2.
 - **LIVE-09 — Multiple live inputs (later):** continue live-input work only after the media-library and conversion phases; scope it independently without coupling stored media to live transport.
 - **Remote Pi access (later):** design remote player administration independently from media delivery and the current paired-player authorization path.
+
+## Playlist and scheduling phases
+
+- **PLAYLIST-01 — Persistence and basic management (complete):** wall-owned playlists, ordered same-wall scene items, 30-second default durations, duplicate scene entries, and dashboard CRUD. No playback runtime exists yet.
+- **PLAYLIST-02 — Playlist editor (complete):** playlist-level loading scenes, wall-scoped scene browsing, editable durations, drag and accessible button reordering, and consistent preview-versus-Go-live behavior without changing runtime output.
+- **PLAYLIST-03 — Synchronized runtime and loading transition:** introduce wall-authoritative playback state, target preparation/readiness, a lightweight cached loading-scene path, and synchronized switching. Players must not run independent sleep-and-switch timers. Manual and playlist transitions should share one mechanism.
+- **PLAYLIST-04 — Playback controls:** add Play, Stop, and Next only after synchronized runtime semantics are established.
+- **SCHEDULE-01 — Scheduling:** add days and times after playlist playback is reliable.
