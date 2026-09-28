@@ -4,7 +4,7 @@ import { sceneGeometryVersion, validateV2SceneRender, virtualPlaneTransform, typ
 import type { Device, Scene } from '../types'
 import { Layer } from './Layer'
 
-export type ScenePreviewProps = { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; virtualWallGeometry?: VirtualWallGeometryResult | null; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean; rawVideos?: boolean; embedded?: boolean; liveStreams?: ReadonlyMap<string, MediaStream> }
+export type ScenePreviewProps = { scene: Scene; player?: boolean; deviceId?: string; devices?: Device[]; virtualWallGeometry?: VirtualWallGeometryResult | null; serverEpochOffsetMs?: number; sceneStartedAtMs?: number; videosDisabled?: boolean; rawVideos?: boolean; embedded?: boolean; liveStreams?: ReadonlyMap<string, MediaStream>; onMediaStateChange?: (layerId: string, state: string) => void }
 
 export function ScenePreview(props: ScenePreviewProps) {
   return sceneGeometryVersion(props.scene) === 2 ? <V2ScenePreview {...props} /> : <V1ScenePreview {...props} />
@@ -12,7 +12,7 @@ export function ScenePreview(props: ScenePreviewProps) {
 
 // Keep the complete legacy render path isolated: V1 scene geometry continues to
 // use the same percentages, reference planes, preview tiling, and crop transform.
-function V1ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false, embedded = false, liveStreams }: ScenePreviewProps) {
+function V1ScenePreview({ scene, player = false, deviceId, devices = [], serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false, embedded = false, liveStreams, onMediaStateChange }: ScenePreviewProps) {
   const root = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
   useEffect(() => {
@@ -35,18 +35,18 @@ function V1ScenePreview({ scene, player = false, deviceId, devices = [], serverE
     {!player && activeDevices.length ? activeDevices.map(device => {
       const box = deviceRect(device)
       return <div key={device.id} style={{ position: 'absolute', left: `${(box.x - view.x) / view.width * 100}%`, top: `${(box.y - view.y) / view.height * 100}%`, width: `${box.width / view.width * 100}%`, height: `${box.height / view.height * 100}%` }}>
-        <V1ScenePreview scene={scene} devices={devices} deviceId={device.id} player embedded serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} />
+        <V1ScenePreview scene={scene} devices={devices} deviceId={device.id} player embedded serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={onMediaStateChange} />
       </div>
     }) : viewport.width > 0 && layers.map(layer => {
       const reference = layerReference(layer, scene, devices, player ? current : undefined)
       return <div className="layer-plane" key={layer.id} style={{ position: 'absolute', left: 0, top: 0, width: reference.width, height: reference.height, zIndex: layer.zIndex, transformOrigin: '0 0', transform: planeTransform(reference, player && !current ? reference : view, viewport.width, viewport.height) }}>
-        <Layer layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} liveStream={layer.content.liveSourceId ? liveStreams?.get(layer.content.liveSourceId) : undefined} />
+        <Layer layer={layer} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} liveStream={layer.content.liveSourceId ? liveStreams?.get(layer.content.liveSourceId) : undefined} onMediaStateChange={onMediaStateChange} />
       </div>
     })}
   </div>
 }
 
-function V2ScenePreview({ scene, player = false, deviceId, virtualWallGeometry, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false, embedded = false, liveStreams }: ScenePreviewProps) {
+function V2ScenePreview({ scene, player = false, deviceId, virtualWallGeometry, serverEpochOffsetMs = Date.now() - performance.now(), sceneStartedAtMs = 0, videosDisabled = false, rawVideos = false, embedded = false, liveStreams, onMediaStateChange }: ScenePreviewProps) {
   const root = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
   useEffect(() => {
@@ -76,9 +76,9 @@ function V2ScenePreview({ scene, player = false, deviceId, virtualWallGeometry, 
 
   return <div ref={root} className={player ? 'player-canvas' : 'scene-preview'} data-geometry-version="2" style={rootStyle}>
     {!player ? regions.map(region => <div key={region.deviceId} style={{ position: 'absolute', left: `${region.xPx / contract.canvas.width * 100}%`, top: `${region.yPx / contract.canvas.height * 100}%`, width: `${region.widthPx / contract.canvas.width * 100}%`, height: `${region.heightPx / contract.canvas.height * 100}%` }}>
-      <V2ScenePreview scene={scene} deviceId={region.deviceId} player embedded virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} />
+      <V2ScenePreview scene={scene} deviceId={region.deviceId} player embedded virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={onMediaStateChange} />
     </div>) : transform && <div className="layer-plane" data-virtual-plane style={{ position: 'absolute', left: 0, top: 0, width: contract.canvas.width, height: contract.canvas.height, transformOrigin: '0 0', transform: transform.cssTransform }}>
-      {layers.map(layer => <Layer key={layer.id} layer={layer} geometryMode="virtual-pixel" serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} liveStream={layer.content.liveSourceId ? liveStreams?.get(layer.content.liveSourceId) : undefined} />)}
+      {layers.map(layer => <Layer key={layer.id} layer={layer} geometryMode="virtual-pixel" serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} rawVideo={rawVideos} liveStream={layer.content.liveSourceId ? liveStreams?.get(layer.content.liveSourceId) : undefined} onMediaStateChange={onMediaStateChange} />)}
     </div>}
   </div>
 }

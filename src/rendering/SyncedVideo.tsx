@@ -1,6 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 
-export function SyncedVideo({ style, src, muted, loop, serverEpochOffsetMs, sceneStartedAtMs }: { style: CSSProperties; src: string; muted: boolean; loop: boolean; serverEpochOffsetMs: number; sceneStartedAtMs: number }) {
+export function SyncedVideo({ style, src, muted, loop, serverEpochOffsetMs, sceneStartedAtMs, onMediaStateChange }: { style: CSSProperties; src: string; muted: boolean; loop: boolean; serverEpochOffsetMs: number; sceneStartedAtMs: number; onMediaStateChange?: (state: string) => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   useEffect(() => {
     const video = videoRef.current; if (!video || !sceneStartedAtMs) return
@@ -32,5 +32,5 @@ export function SyncedVideo({ style, src, muted, loop, serverEpochOffsetMs, scen
     const timer = window.setInterval(correctDrift, 1500)
     return () => { video.removeEventListener('loadedmetadata', align); window.clearInterval(timer) }
   }, [src, loop, serverEpochOffsetMs, sceneStartedAtMs])
-  return <video className="media-layer" ref={videoRef} style={style} src={src} autoPlay muted={muted} loop={loop} playsInline />
+  return <video className="media-layer" ref={videoRef} style={style} src={src} autoPlay muted={muted} loop={loop} playsInline onLoadedData={() => onMediaStateChange?.('LOADED')} onPlaying={() => onMediaStateChange?.('PLAYING')} onPause={() => onMediaStateChange?.('PAUSED')} onError={() => onMediaStateChange?.('ERROR')} />
 }
