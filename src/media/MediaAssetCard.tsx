@@ -12,7 +12,7 @@ export function MediaAssetCard({ asset, usageCount, mode, selectable, busy, onSe
 }) {
   const duration = formatDuration(asset.duration_seconds)
   return <article className={`media-asset-card ${selectable ? '' : 'is-incompatible'}`}>
-    <div className="media-asset-preview">
+    <div className="media-asset-preview screenmesh-workspace-grid">
       {asset.media_type === 'image'
         ? <img src={asset.thumbnail_url || asset.public_url} alt="" loading="lazy" />
         : asset.thumbnail_url ? <img src={asset.thumbnail_url} alt="" loading="lazy" /> : <span aria-hidden="true">▶</span>}

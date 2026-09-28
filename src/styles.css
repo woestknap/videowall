@@ -283,7 +283,7 @@
 .physical-wall-summary strong { color: #eef4ff; font-size: .9rem; }
 .physical-wall-caution, .physical-wall-invalid { margin: 0; padding: .7rem .8rem; border-left: 3px solid #f2bf68; color: #d9c69e !important; background: #2a2215; }
 .physical-wall-actions { display: flex; justify-content: flex-start; gap: .65rem; }
-.physical-wall-canvas { position: relative; box-sizing: border-box; justify-self: center; max-height: 65vh; border: 2px solid #617392; border-radius: 7px; background-color: #080d17; background-image: linear-gradient(#172137 1px, transparent 1px), linear-gradient(90deg, #172137 1px, transparent 1px); background-size: 24px 24px; overflow: hidden; user-select: none; }
+.physical-wall-canvas { position: relative; box-sizing: border-box; justify-self: center; max-height: 65vh; border: 2px solid #617392; border-radius: 7px; overflow: hidden; user-select: none; }
 .physical-wall-screen { position: absolute; box-sizing: border-box; display: grid; align-content: start; gap: .15rem; min-width: 3px; min-height: 3px; padding: .35rem; border: 3px solid #70f0c1; color: #f5fff9; background: rgba(24, 83, 68, .62); box-shadow: 0 0 0 1px #07110e, inset 0 0 20px #040a0873; cursor: grab; touch-action: none; }
 .physical-wall-screen.is-dragging { z-index: 3; border-color: #fff; cursor: grabbing; }
 .physical-wall-screen > span { justify-self: start; min-width: 1.25rem; padding: .12rem .25rem; border-radius: 3px; color: #07130f; background: #9bf6d2; font-weight: 900; text-align: center; }
@@ -568,7 +568,7 @@
 .editor-page.screenmesh-light-preview .canvas-controls { border-color: var(--sm-color-border); color: var(--sm-color-text); background: var(--sm-color-surface-alt); box-shadow: 0 4px 12px #0003; }
 .editor-page.screenmesh-light-preview .canvas-controls::before { color: var(--sm-color-text-secondary); }
 .editor-page.screenmesh-light-preview .canvas-controls .sm-button { min-height: 2.1rem; padding: .42rem .65rem; }
-.editor-page.screenmesh-light-preview .editor-stage { border-color: #59667c; background: radial-gradient(circle at 65% 20%, #263a5f, #090e18 68%); box-shadow: 0 20px 50px #0009, 0 0 0 1px #ffffff18; }
+.editor-page.screenmesh-light-preview .editor-stage { border-color: #59667c; box-shadow: 0 20px 50px #0009, 0 0 0 1px #ffffff18; }
 .editor-page.screenmesh-light-preview .canvas-hint { border-color: #2a3445; color: #aeb8ca; background: #171e2a; }
 .editor-page.screenmesh-light-preview .device-screen-guide { border-color: #8fa3c2; }
 .editor-page.screenmesh-light-preview .virtual-pixel-guide-overlay .device-screen-guide { border-color: #8fa3c2; box-shadow: 0 0 0 1px #0b1019; }
@@ -601,6 +601,9 @@
 .editor-page.screenmesh-light-preview .media-library-dialog .media-asset-card { color: var(--sm-color-text); border-color: var(--sm-color-border); background: var(--sm-color-surface-alt); box-shadow: var(--sm-shadow-raised); }
 .editor-page.screenmesh-light-preview .media-library-dialog .media-asset-body > span, .editor-page.screenmesh-light-preview .media-library-dialog .media-asset-body > small { color: var(--sm-color-text-muted); }
 .editor-page.screenmesh-light-preview .media-library-dialog .media-asset-facts { color: var(--sm-color-text-secondary); }
+
+/* Shared dark visual-content surface. The physical calibration canvas is the source treatment. */
+.screenmesh-workspace-grid { background-color: #080d17; background-image: linear-gradient(#172137 1px, transparent 1px), linear-gradient(90deg, #172137 1px, transparent 1px); background-size: 24px 24px; }
 
 @media (max-width: 1100px) and (min-width: 901px) {
   .editor-page.screenmesh-light-preview .editor-layout { grid-template-columns: 220px minmax(0, 1fr) 260px; }
