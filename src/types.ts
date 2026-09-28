@@ -115,3 +115,32 @@ export type PlaylistItem = {
   created_at: string
   updated_at: string
 }
+
+export type PlaylistRuntime = {
+  wall_id: string
+  playlist_id: string | null
+  playlist_name: string
+  status: 'PLAYING' | 'PAUSED' | 'STOPPED'
+  phase: 'DISPLAYING' | 'PREPARING'
+  generation: string
+  sequence: number
+  current_index: number
+  item_count: number
+  current_item_id: string | null
+  current_scene_id: string | null
+  current_scene_name: string | null
+  target_index: number | null
+  target_item_id: string | null
+  target_scene_id: string | null
+  target_scene_name: string | null
+  loading_scene_id: string | null
+  started_at: string | null
+  next_transition_at: string | null
+  paused_remaining_ms: number | null
+  transition_deadline_at: string | null
+  expected_count: number
+  ready_count: number
+  failed_device_ids: string[]
+  degraded: boolean
+  updated_at: string
+}

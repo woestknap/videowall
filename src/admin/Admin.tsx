@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { isConfigured, supabase } from '../lib/supabase'
 import { bounds, deviceRect } from '../lib/wallGeometry'
 import { ScenePreview } from '../rendering/ScenePreview'
-import type { Device, Scene, SceneLayer, Wall } from '../types'
+import type { Device, PlaylistRuntime, Scene, SceneLayer, Wall } from '../types'
 import { MediaLibrary } from '../media/MediaLibrary'
 import { v2SceneCreateValues, virtualGeometryForWall } from '../lib/editorSceneGeometry'
 import { physicalDeviceSaveValues, resetPhysicalPositions } from '../lib/physicalWallLayout'
@@ -59,6 +59,7 @@ export function Admin() {
   const [activeWall, setActiveWall] = useState<string>('')
   const [selectedSceneId, setSelectedSceneId] = useState<string>('')
   const [liveSceneId, setLiveSceneId] = useState<string>('')
+  const [playlistRuntime, setPlaylistRuntime] = useState<PlaylistRuntime | null>(null)
   const [pin, setPin] = useState<string>('')
   const [notice, setNotice] = useState('')
   const [physicalLayoutDirty, setPhysicalLayoutDirty] = useState(false)
@@ -87,9 +88,13 @@ export function Admin() {
     setSelectedSceneId(current => selectedSceneIdForWall(scenes, activeWall, current))
   }, [activeWall, scenes])
   useEffect(() => {
-    if (!supabase || !activeWall) { setDevices([]); setLiveSceneId(''); return }
-    void supabase.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size,included_in_wall').eq('wall_id', activeWall).order('created_at').then(({ data }) => { setDevices(data ?? []); setPhysicalLayoutDirty(false) })
-    void supabase.from('wall_state').select('active_scene_id').eq('wall_id', activeWall).maybeSingle().then(({ data }) => setLiveSceneId(data?.active_scene_id ?? ''))
+    if (!supabase || !activeWall) { setDevices([]); setLiveSceneId(''); setPlaylistRuntime(null); return }
+    const client = supabase
+    void client.from('devices').select('id,name,wall_id,last_seen_at,width,height,layout_x,layout_y,layout_width,layout_height,auto_size,included_in_wall').eq('wall_id', activeWall).order('created_at').then(({ data }) => { setDevices(data ?? []); setPhysicalLayoutDirty(false) })
+    const refreshLiveScene = () => void client.from('wall_state').select('active_scene_id').eq('wall_id', activeWall).maybeSingle().then(({ data }) => setLiveSceneId(data?.active_scene_id ?? ''))
+    refreshLiveScene()
+    const timer = window.setInterval(refreshLiveScene, 2000)
+    return () => window.clearInterval(timer)
   }, [activeWall])
   async function createWall() {
     const name = prompt('Wall name', 'Living room wall')?.trim()
@@ -122,8 +127,9 @@ export function Admin() {
   async function goLive(scene: Scene) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
     if (scene.geometry_version === 2 && scene.wall_id !== activeWall) return setNotice('This virtual-pixel scene belongs to a different wall.')
-    const { error } = await supabase.from('wall_state').upsert({ wall_id: activeWall, active_scene_id: scene.id, playback_mode: 'manual', changed_at: new Date().toISOString() })
+    const { error } = await supabase.rpc('go_live_manual', { requested_wall_id: activeWall, requested_scene_id: scene.id })
     if (!error) setLiveSceneId(scene.id)
+    if (!error) setPlaylistRuntime(current => current ? { ...current, status: 'STOPPED', phase: 'DISPLAYING' } : null)
     setNotice(error ? error.message : `${scene.name} is live.`)
   }
   async function signOut() {
@@ -205,6 +211,7 @@ export function Admin() {
           <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{selectedScene.id === liveSceneId && <span className="sm-status sm-status-success">Live now</span>}</div>
           {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${selectedScene.id}`}>open scene to update</a>.</p> : <ScenePreview key={selectedScene.id} scene={selectedScene} devices={devices} virtualWallGeometry={selectedScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
           <p className="dashboard-current-live">{liveScene ? selectedScene.id === liveScene.id ? `${liveScene.name} is currently live on ${selectedWall?.name ?? 'this wall'}.` : <><strong>{liveScene.name}</strong> is currently live. Going live will replace it with <strong>{selectedScene.name}</strong>.</> : 'No scene is currently live on this wall.'}</p>
+          {playlistRuntime && playlistRuntime.status !== 'STOPPED' && <p className="dashboard-current-live"><strong>Playlist: {playlistRuntime.playlist_name}</strong> · {playlistRuntime.status} · {playlistRuntime.phase} · {Math.max(0, playlistRuntime.current_index) + 1} / {playlistRuntime.item_count}</p>}
         </article>
 
         <article className="panel sm-card scenes dashboard-scenes-panel">
@@ -226,7 +233,7 @@ export function Admin() {
       </div>
     </section>
 
-    <PlaylistManager wallId={activeWall} scenes={scenes} onNotice={setNotice} />
+    <PlaylistManager wallId={activeWall} scenes={scenes} onNotice={setNotice} onRuntimeChange={setPlaylistRuntime} />
 
     <section className="dashboard-section" aria-labelledby="devices-heading">
       <div className="dashboard-section-heading"><div><p className="eyebrow">WALL HEALTH</p><h2 id="devices-heading">Devices + wall setup</h2></div><p>Review player health before opening detailed calibration controls.</p></div>

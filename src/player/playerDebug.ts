@@ -1,4 +1,5 @@
-import type { Scene, SceneLayer } from '../types'
+import type { PlaylistRuntime, Scene, SceneLayer } from '../types'
+import { formatPlaylistRemaining, playlistRemainingMs } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 
 export type DebugRow = { label: string; value: string; detail?: string }
@@ -41,6 +42,25 @@ export function mediaDebugRows(layers: SceneLayer[], states: Readonly<Record<str
   const videos = layers.filter(layer => layer.type === 'video')
   const rows: DebugRow[] = [{ label: 'Images', value: String(images) }, { label: 'Videos', value: String(videos.length) }]
   for (const layer of videos) rows.push({ label: `Video ${shortDebugId(layer.id)}`, value: states[layer.id] ?? 'LOADING' })
+  return rows
+}
+
+export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.now()): DebugRow[] {
+  if (!runtime || runtime.status === 'STOPPED') return [{ label: 'Playlist', value: 'STOPPED' }]
+  const rows: DebugRow[] = [
+    { label: 'Playlist', value: runtime.playlist_name },
+    { label: 'Status', value: runtime.status },
+    { label: 'Item', value: `${Math.max(0, runtime.current_index) + 1} / ${runtime.item_count}` },
+    { label: 'Generation', value: shortDebugId(runtime.generation) },
+    { label: 'Sequence', value: String(runtime.sequence) },
+    { label: 'Phase', value: runtime.phase },
+  ]
+  if (runtime.phase === 'PREPARING') {
+    rows.push({ label: 'Target', value: runtime.target_scene_name ?? shortDebugId(runtime.target_scene_id) })
+    rows.push({ label: 'Ready', value: `${runtime.ready_count} / ${runtime.expected_count}` })
+    rows.push({ label: 'Timeout', value: runtime.transition_deadline_at ? formatPlaylistRemaining(Math.max(0, Date.parse(runtime.transition_deadline_at) - nowMs)) : '—' })
+  } else rows.push({ label: 'Next', value: formatPlaylistRemaining(playlistRemainingMs(runtime, nowMs)) })
+  if (runtime.degraded) rows.push({ label: 'Transition', value: 'DEGRADED', detail: `${runtime.failed_device_ids.length} player(s) missed readiness` })
   return rows
 }
 

@@ -59,6 +59,6 @@ These are planned tasks, not claims that future behavior already exists. Each it
 
 - **PLAYLIST-01 — Persistence and basic management (complete):** wall-owned playlists, ordered same-wall scene items, 30-second default durations, duplicate scene entries, and dashboard CRUD. No playback runtime exists yet.
 - **PLAYLIST-02 — Playlist editor (complete):** playlist-level loading scenes, wall-scoped scene browsing, editable durations, drag and accessible button reordering, and consistent preview-versus-Go-live behavior without changing runtime output.
-- **PLAYLIST-03 — Synchronized runtime and loading transition:** introduce wall-authoritative playback state, target preparation/readiness, a lightweight cached loading-scene path, and synchronized switching. Players must not run independent sleep-and-switch timers. Manual and playlist transitions should share one mechanism.
-- **PLAYLIST-04 — Playback controls:** add Play, Stop, and Next only after synchronized runtime semantics are established.
+- **PLAYLIST-03 — Synchronized runtime and loading transition (complete):** wall-authoritative snapshot playback, generation/sequence race protection, timestamp timing, Start/Pause/Resume/Next/Stop controls, playlist loading scenes, token-authenticated player readiness, bounded degraded commits, catch-up, and atomic manual override cancellation. Players do not run independent item timers.
+- **PLAYLIST-04 — Runtime polish:** reserved for operational refinements found during multi-Pi acceptance testing; the core playback controls now ship with PLAYLIST-03.
 - **SCHEDULE-01 — Scheduling:** add days and times after playlist playback is reliable.

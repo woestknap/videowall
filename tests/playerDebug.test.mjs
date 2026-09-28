@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { geometryDebugRows, liveDebugRows, mediaDebugRows, playerHealthSummary, shortDebugId } from '../src/player/playerDebug.ts'
+import { geometryDebugRows, liveDebugRows, mediaDebugRows, playerHealthSummary, playlistDebugRows, shortDebugId } from '../src/player/playerDebug.ts'
 
 const v1 = { id: 'scene', name: 'Legacy', layers: [], duration_seconds: 1 }
 const v2 = { ...v1, geometry_version: 2, canvas_width_px: 3362, canvas_height_px: 1831, wall_geometry_revision: 'current', layers: [{ id: 'live-layer', type: 'live', target: [], x: 0, y: 0, width: 1, height: 1, zIndex: 1, content: { liveSourceId: 'camera-a', liveSourceName: 'Camera A' } }] }
@@ -33,4 +33,12 @@ test('media states remain compact and debug-disabled player rendering does not s
   const player = readFileSync(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
   assert.match(player, /onMediaStateChange=\{debug \? setMediaStatus : undefined\}/)
   assert.match(player, /onStatus=\{debug \? setLiveSourceStatus : ignoreLiveSourceStatus\}/)
+})
+test('playlist diagnostics expose display and preparation state without secrets', () => {
+  const runtime = { playlist_name: 'Morning', status: 'PLAYING', phase: 'PREPARING', generation: '123456789012', sequence: 4, current_index: 0, item_count: 5, target_scene_id: 'target-scene', target_scene_name: 'Promo', ready_count: 4, expected_count: 5, transition_deadline_at: new Date(Date.now() + 5000).toISOString(), failed_device_ids: [], degraded: false }
+  const rows = playlistDebugRows(runtime)
+  assert.equal(rows.find(row => row.label === 'Playlist')?.value, 'Morning')
+  assert.equal(rows.find(row => row.label === 'Ready')?.value, '4 / 5')
+  assert.equal(rows.find(row => row.label === 'Generation')?.value, '12345678…')
+  assert.equal(rows.some(row => row.label.toLowerCase().includes('token')), false)
 })
