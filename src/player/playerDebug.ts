@@ -4,6 +4,19 @@ import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometr
 
 export type DebugRow = { label: string; value: string; detail?: string }
 export type LiveDebugState = 'WAITING' | 'CONNECTING' | 'CONNECTED' | 'NEGOTIATING' | 'STREAMING' | 'RECONNECTING' | 'ENDED' | 'ERROR'
+export type LiveSourceDiagnostic = {
+  socketState?: 'CONNECTING' | 'OPEN' | 'CLOSED'
+  closeCode?: number
+  closeReason?: string
+  closeWasClean?: boolean
+  socketError?: boolean
+  sessionId?: string
+  generation?: number
+  targetDeviceId?: string
+  expiresAt?: string
+  peerConnectionState?: RTCPeerConnectionState
+  iceConnectionState?: RTCIceConnectionState
+}
 
 export function shortDebugId(value: string | null | undefined) {
   return value ? (value.length <= 10 ? value : `${value.slice(0, 8)}…`) : '—'
@@ -30,11 +43,27 @@ export function geometryDebugRows(scene: Scene | null, geometry: VirtualWallGeom
   return rows
 }
 
-export function liveDebugRows(layers: SceneLayer[], leaseSourceIds: string[], states: Readonly<Record<string, LiveDebugState>>, streams: ReadonlyMap<string, MediaStream>): DebugRow[] {
+export function liveDebugRows(layers: SceneLayer[], leaseSourceIds: string[], states: Readonly<Record<string, LiveDebugState>>, streams: ReadonlyMap<string, MediaStream>, diagnostics: Readonly<Record<string, LiveSourceDiagnostic>> = {}): DebugRow[] {
   const names = new Map<string, string>()
   for (const layer of layers) if (layer.type === 'live' && layer.content.liveSourceId) names.set(layer.content.liveSourceId, layer.content.liveSourceName?.trim() || `Source ${shortDebugId(layer.content.liveSourceId)}`)
   const ids = [...new Set([...names.keys(), ...leaseSourceIds])]
-  return ids.map(id => ({ label: names.get(id) ?? `Source ${shortDebugId(id)}`, value: states[id] ?? (leaseSourceIds.includes(id) ? 'WAITING' : 'NO LEASE'), detail: streams.has(id) ? 'video track present' : undefined }))
+  return ids.map(id => {
+    const diagnostic = diagnostics[id]
+    const detail = [
+      streams.has(id) ? 'video track present' : '',
+      diagnostic?.socketState ? `ws=${diagnostic.socketState}` : '',
+      diagnostic?.closeCode === undefined ? '' : `close=${diagnostic.closeCode}${diagnostic.closeWasClean === undefined ? '' : diagnostic.closeWasClean ? ' clean' : ' unclean'}${diagnostic.closeReason ? ` (${diagnostic.closeReason})` : ''}`,
+      diagnostic?.socketError ? 'ws-error' : '',
+      diagnostic?.sessionId ? `session=${shortDebugId(diagnostic.sessionId)}` : '',
+      diagnostic?.generation === undefined ? '' : `generation=${diagnostic.generation}`,
+      `source=${shortDebugId(id)}`,
+      diagnostic?.targetDeviceId ? `target=${shortDebugId(diagnostic.targetDeviceId)}` : '',
+      diagnostic?.expiresAt ? `expires=${diagnostic.expiresAt}` : '',
+      diagnostic?.peerConnectionState ? `peer=${diagnostic.peerConnectionState}` : '',
+      diagnostic?.iceConnectionState ? `ice=${diagnostic.iceConnectionState}` : '',
+    ].filter(Boolean).join(' · ')
+    return { label: names.get(id) ?? `Source ${shortDebugId(id)}`, value: states[id] ?? (leaseSourceIds.includes(id) ? 'WAITING' : 'NO LEASE'), detail: detail || undefined }
+  })
 }
 
 export function mediaDebugRows(layers: SceneLayer[], states: Readonly<Record<string, string>>): DebugRow[] {

@@ -28,6 +28,22 @@ test('IDs, missing values, and multiple live rows remain safe and distinct', () 
   const rows = liveDebugRows([{ ...v2.layers[0], content: { liveSourceId: 'a', liveSourceName: 'Camera A' } }, { ...v2.layers[0], id: 'other', content: { liveSourceId: 'b' } }], ['a', 'b'], { a: 'STREAMING', b: 'WAITING' }, new Map())
   assert.deepEqual(rows.map(row => row.value), ['STREAMING', 'WAITING'])
 })
+test('live-source diagnostics report close details without exposing sensitive signaling data', () => {
+  const rows = liveDebugRows([{ ...v2.layers[0], content: { liveSourceId: 'camera-source-id', liveSourceName: 'Camera A' } }], ['camera-source-id'], { 'camera-source-id': 'RECONNECTING' }, new Map(), {
+    'camera-source-id': { socketState: 'CLOSED', closeCode: 1008, closeReason: 'replaced', closeWasClean: true, socketError: true, sessionId: 'session-123456789', generation: 2, targetDeviceId: 'target-123456789', expiresAt: '2026-09-29T12:00:00.000Z', peerConnectionState: 'failed', iceConnectionState: 'disconnected', deviceToken: 'secret-token', sdp: 'secret-sdp', candidate: 'secret-candidate' },
+  })
+  const detail = rows[0].detail ?? ''
+  assert.match(detail, /ws=CLOSED/)
+  assert.match(detail, /close=1008 clean \(replaced\)/)
+  assert.match(detail, /ws-error/)
+  assert.match(detail, /session=session-/)
+  assert.match(detail, /generation=2/)
+  assert.match(detail, /target=target-1/)
+  assert.match(detail, /expires=2026-09-29T12:00:00.000Z/)
+  assert.match(detail, /peer=failed/)
+  assert.match(detail, /ice=disconnected/)
+  assert.doesNotMatch(detail, /secret-token|secret-sdp|secret-candidate/)
+})
 test('media states remain compact and debug-disabled player rendering does not subscribe to them', () => {
   assert.equal(mediaDebugRows([{ ...v2.layers[0], id: 'video', type: 'video' }], { video: 'PLAYING' }).find(row => row.label === 'Video video')?.value, 'PLAYING')
   const player = readFileSync(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
