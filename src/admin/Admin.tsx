@@ -47,9 +47,9 @@ function deviceStatus(device: Device) {
     : { label: 'Not seen recently', tone: 'stale' }
 }
 
-function DashboardDeviceRow({ device, index, onRemove }: { device: Device; index: number; onRemove: (device: Device) => void }) {
+function DashboardDeviceRow({ device, index, onRename, onRemove }: { device: Device; index: number; onRename: (device: Device) => void; onRemove: (device: Device) => void }) {
   const status = deviceStatus(device)
-  return <div className="dashboard-device-row"><span>{index + 1}</span><div><strong>{device.name}</strong><small className={`device-status is-${status.tone}`}>{status.label}</small></div><div className="dashboard-device-maintenance"><span>Maintenance</span><button className="sm-button sm-button-danger maintenance-action" onClick={() => onRemove(device)}>Remove Pi</button></div></div>
+  return <div className="dashboard-device-row"><span>{index + 1}</span><div><strong>{device.name}</strong><small className={`device-status is-${status.tone}`}>{status.label}</small></div><div className="dashboard-device-maintenance"><span>Maintenance</span><button className="sm-button sm-button-secondary maintenance-action" onClick={() => onRename(device)}>Rename</button><button className="sm-button sm-button-danger maintenance-action" onClick={() => onRemove(device)}>Remove Pi</button></div></div>
 }
 
 export function Admin() {
@@ -123,6 +123,17 @@ export function Admin() {
     const { error } = await supabase.from('devices').delete().eq('id', device.id)
     if (error) return setNotice(error.message)
     setDevices((current) => current.filter((item) => item.id !== device.id)); setNotice(`${device.name} was removed. It can no longer play this wall until paired again.`)
+  }
+  async function renameDevice(device: Device) {
+    if (!supabase) return
+    const enteredName = prompt('Rename paired screen', device.name)
+    if (enteredName === null) return
+    const newName = enteredName.trim()
+    if (!newName) return setNotice('Device name cannot be empty.')
+    const { error } = await supabase.from('devices').update({ name: newName }).eq('id', device.id)
+    if (error) return setNotice(error.message)
+    setDevices((current) => current.map((item) => item.id === device.id ? { ...item, name: newName } : item))
+    setNotice(`Device renamed to ${newName}.`)
   }
   async function goLive(scene: Scene) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
@@ -240,7 +251,7 @@ export function Admin() {
       <article className={`panel sm-card dashboard-screens-panel ${selectedWall?.layout_mode === 'physical' ? 'physical-layout-panel' : ''}`}>
         <div className="dashboard-health-summary"><span><strong>{devices.length}</strong>Total screens</span><span className={recentDeviceCount ? 'is-healthy' : ''}><strong>{recentDeviceCount}</strong>Recently online</span><span><strong>{includedDeviceCount}</strong>Included in wall</span><span><strong>{selectedWall?.layout_mode === 'physical' ? 'Physical' : selectedWall ? 'Viewport' : '—'}</strong>Layout mode</span></div>
         <div className="panel-heading"><div><p className="eyebrow">{selectedWall?.name ?? 'NO WALL SELECTED'}</p><h3>{selectedWall?.layout_mode === 'physical' ? 'Physical wall calibration' : 'Wall layout'}</h3></div><button className="sm-button sm-button-secondary" disabled={!activeWall} onClick={() => void createPin()}>Pair screen</button></div>
-        {devices.length ? <>{selectedWall?.layout_mode === 'physical' ? <PhysicalWallEditor wall={selectedWall} devices={devices} geometry={selectedVirtualGeometry} dirty={physicalLayoutDirty} onChange={updatePhysicalDevice} onReset={resetPhysicalLayout} onSave={() => void savePhysicalLayout()} /> : <WallLayoutOverview devices={devices} />}<div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRemove={deleteDevice} />)}</div></> : <p className="dashboard-empty-state">Pair a Pi to start building your wall.</p>}
+        {devices.length ? <>{selectedWall?.layout_mode === 'physical' ? <PhysicalWallEditor wall={selectedWall} devices={devices} geometry={selectedVirtualGeometry} dirty={physicalLayoutDirty} onChange={updatePhysicalDevice} onReset={resetPhysicalLayout} onSave={() => void savePhysicalLayout()} /> : <WallLayoutOverview devices={devices} />}<div className="dashboard-device-list">{devices.map((device, index) => <DashboardDeviceRow device={device} index={index} key={device.id} onRename={renameDevice} onRemove={deleteDevice} />)}</div></> : <p className="dashboard-empty-state">Pair a Pi to start building your wall.</p>}
       </article>
     </section>
 
