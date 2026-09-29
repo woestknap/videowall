@@ -8,6 +8,7 @@ import { recoveryDelayMs } from '../lib/recovery'
 import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, type VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { geometryDebugRows, liveDebugRows, mediaDebugRows, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState } from './playerDebug'
 import { preparePlaylistScene } from '../lib/playlistRuntime'
+import { liveSessionConnectionIdentity, liveSessionLeaseIsActive } from '../lib/liveSessionConnection'
 
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
 
@@ -16,7 +17,14 @@ function PlayerLiveSession({ device, lease, disabled, onStream, onRemove, onStat
   const scopeRef = useRef<AuthenticatedMessage | null>(null)
   const peerRef = useRef<RTCPeerConnection | null>(null)
   const pendingRef = useRef<PendingIceCandidate[]>([])
+  const expiresAtRef = useRef(lease.expiresAt)
+  const callbacksRef = useRef({ onStream, onRemove, onStatus })
+  expiresAtRef.current = lease.expiresAt
+  callbacksRef.current = { onStream, onRemove, onStatus }
+  const connectionIdentity = liveSessionConnectionIdentity(device, lease)
   useEffect(() => {
+    const { id: deviceId, token: deviceToken } = device
+    const { sessionId, liveSourceId, targetDeviceId, signalingUrl } = lease
     let stopped = false
     let retries = 0
     let retryTimer = 0
@@ -24,43 +32,43 @@ function PlayerLiveSession({ device, lease, disabled, onStream, onRemove, onStat
     const send = <T extends 'answer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'answer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) => {
       if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
     }
-    const retry = () => { if (!stopped && new Date(lease.expiresAt).getTime() > Date.now()) { onStatus(lease.liveSourceId, 'RECONNECTING'); retryTimer = window.setTimeout(connect, recoveryDelayMs(retries++)) } }
+    const retry = () => { if (!stopped && liveSessionLeaseIsActive(expiresAtRef.current)) { callbacksRef.current.onStatus(liveSourceId, 'RECONNECTING'); retryTimer = window.setTimeout(connect, recoveryDelayMs(retries++)) } }
     function connect() {
       if (stopped) return
-      onStatus(lease.liveSourceId, 'CONNECTING')
+      callbacksRef.current.onStatus(liveSourceId, 'CONNECTING')
       let socket: WebSocket
-      try { socket = new WebSocket(lease.signalingUrl) } catch { onStatus(lease.liveSourceId, 'ERROR'); retry(); return }
+      try { socket = new WebSocket(signalingUrl) } catch { callbacksRef.current.onStatus(liveSourceId, 'ERROR'); retry(); return }
       socketRef.current = socket
-      socket.addEventListener('open', () => { if (!stopped && socketRef.current === socket) socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId: device.id, deviceToken: device.token, sessionId: lease.sessionId })) })
+      socket.addEventListener('open', () => { if (!stopped && socketRef.current === socket) socket.send(JSON.stringify({ version: SIGNALING_VERSION, type: 'auth', role: 'player', deviceId, deviceToken, sessionId })) })
       socket.addEventListener('message', event => { void (async () => {
         if (stopped || socketRef.current !== socket || typeof event.data !== 'string') return
         const message = parseServerSignalingMessage(event.data)
         if (!message) return
-        if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === lease.sessionId && message.liveSourceId === lease.liveSourceId && message.targetDeviceId === device.id) {
+        if (message.type === 'authenticated' && message.role === 'player' && message.sessionId === sessionId && message.liveSourceId === liveSourceId && message.targetDeviceId === targetDeviceId && targetDeviceId === deviceId) {
           scopeRef.current = message
-          retries = 0; onStatus(lease.liveSourceId, 'CONNECTED')
+          retries = 0; callbacksRef.current.onStatus(liveSourceId, 'CONNECTED')
           socket.send(JSON.stringify(scopedClientMessage(message, 'peer-ready', {})))
         } else if (message.type === 'offer' && !disabled) {
           const scope = scopeRef.current
           if (!scope || message.sessionId !== scope.sessionId || message.liveSourceId !== scope.liveSourceId || message.targetDeviceId !== scope.targetDeviceId || message.generation !== scope.generation) return
-          closePeer(); onStatus(lease.liveSourceId, 'NEGOTIATING')
+          closePeer(); callbacksRef.current.onStatus(liveSourceId, 'NEGOTIATING')
           const peer = new RTCPeerConnection(webRtcConfiguration(import.meta.env.VITE_WEBRTC_STUN_URLS)); peerRef.current = peer
           peer.onicecandidate = event => send(scope, 'ice-candidate', event.candidate ? { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex } : { candidate: null, sdpMid: null, sdpMLineIndex: null })
-          peer.ontrack = event => { if (peer === peerRef.current && event.track.kind === 'video') { onStream(scope.liveSourceId, event.streams[0] ?? new MediaStream([event.track])); onStatus(lease.liveSourceId, 'STREAMING') } }
-          peer.onconnectionstatechange = () => { if (peer === peerRef.current && (peer.connectionState === 'failed' || peer.connectionState === 'closed')) { onStatus(lease.liveSourceId, 'RECONNECTING'); closePeer(); if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(scope, 'peer-ready', {}))) } }
+          peer.ontrack = event => { if (peer === peerRef.current && event.track.kind === 'video') { callbacksRef.current.onStream(scope.liveSourceId, event.streams[0] ?? new MediaStream([event.track])); callbacksRef.current.onStatus(liveSourceId, 'STREAMING') } }
+          peer.onconnectionstatechange = () => { if (peer === peerRef.current && (peer.connectionState === 'failed' || peer.connectionState === 'closed')) { callbacksRef.current.onStatus(liveSourceId, 'RECONNECTING'); closePeer(); if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(scope, 'peer-ready', {}))) } }
           await peer.setRemoteDescription({ type: 'offer', sdp: message.payload.sdp }); await flushIceCandidates(peer, pendingRef.current)
           const answer = await peer.createAnswer(); if (peer !== peerRef.current) return; await peer.setLocalDescription(answer)
           if (peer.localDescription?.sdp) send(scope, 'answer', { sdp: peer.localDescription.sdp })
         } else if (message.type === 'ice-candidate') {
           const scope = scopeRef.current
           if (scope && message.sessionId === scope.sessionId && message.liveSourceId === scope.liveSourceId && message.targetDeviceId === scope.targetDeviceId && message.generation === scope.generation) await addOrQueueIceCandidate(peerRef.current, message.payload.candidate === null ? null : { candidate: message.payload.candidate, sdpMid: message.payload.sdpMid, sdpMLineIndex: message.payload.sdpMLineIndex }, pendingRef.current)
-        } else if (message.type === 'session-ended') { onStatus(lease.liveSourceId, 'ENDED'); closePeer(); onRemove(lease.liveSourceId); socket.close() }
+        } else if (message.type === 'session-ended') { callbacksRef.current.onStatus(liveSourceId, 'ENDED'); closePeer(); callbacksRef.current.onRemove(liveSourceId); socket.close() }
       })() })
       socket.addEventListener('close', () => { if (!stopped && socketRef.current === socket) { socketRef.current = null; retry() } })
     }
     connect()
-    return () => { stopped = true; window.clearTimeout(retryTimer); closePeer(); socketRef.current?.close(1000, 'lease-changed'); onRemove(lease.liveSourceId) }
-  }, [device.id, device.token, lease.sessionId, lease.liveSourceId, lease.signalingUrl, lease.expiresAt, disabled, onStream, onRemove, onStatus])
+    return () => { stopped = true; window.clearTimeout(retryTimer); closePeer(); socketRef.current?.close(1000, 'lease-changed'); callbacksRef.current.onRemove(liveSourceId) }
+  }, [connectionIdentity, disabled])
   return null
 }
 
