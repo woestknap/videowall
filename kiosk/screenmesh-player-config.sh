@@ -122,10 +122,10 @@ split_url() {
 
 without_debug() {
     printf '%s\n' "$1" | awk -F '&' '{
-        for (index = 1; index <= NF; index++) {
-            if ($index !~ /^debug(=|$)/) {
+        for (i = 1; i <= NF; i++) {
+            if ($i !~ /^debug(=|$)/) {
                 if (result != "") result = result "&"
-                result = result $index
+                result = result $i
             }
         }
         print result
@@ -155,7 +155,7 @@ clear_debug() {
 debug_enabled() {
     split_url "$1"
     printf '%s\n' "$SPLIT_QUERY" | awk -F '&' '{
-        for (index = 1; index <= NF; index++) if ($index == "debug=1") exit 0
+        for (i = 1; i <= NF; i++) if ($i == "debug=1") exit 0
         exit 1
     }'
 }
