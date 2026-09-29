@@ -142,18 +142,18 @@ are in this repository for inspection.
 
 labwc imports its real `WAYLAND_DISPLAY`, runtime directory and session variables
 into the user systemd manager, then starts the service. `wayland-info` must complete
-and report an output. An HTTPS request to the player must receive a response;
-HTTP errors such as 403 also allow Chromium to start. Pi #4 demonstrated that
-Python's probe can receive 403 while Chromium loads the player successfully.
-The browser heartbeat validates the actual application, not the probe's HTML or
-HTTP status. DNS, routing and certificate/clock failures are logged and retried every five
-seconds. These intervals are condition polling/backoff, not fixed boot delays.
+and report an output before Chromium starts. The launcher does not make a separate
+Python HTTPS request to the player: Chromium navigates normally with its own TLS
+verification and the browser heartbeat validates the actual application, URL, React
+mount and frame freshness. This avoids treating a Python certificate-store mismatch
+as a compositor/startup failure. A browser navigation or renderer failure is handled
+by the existing 120-second health timeout and systemd restart.
 
 `network-online.target` in the system manager is only a boot milestone, not a
 guarantee of Internet/DNS/application availability. A user service cannot order
 against the system manager's target. This implementation therefore checks the
-actual dependency directly. No network wait target or lingering user manager is
-required, and a failed network check never blocks SSH or the desktop.
+actual Wayland dependency directly. No network wait target or lingering user manager
+is required, and a browser navigation problem never blocks SSH or the desktop.
 
 Chromium runs under one user service with a persistent separate profile. A random
 loopback DevTools port lets the watchdog check the real player tab, its React mount
@@ -315,9 +315,9 @@ ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,pix
 ## Primary references
 
 Verification on the development machine (2026-09-10): production TypeScript/Vite
-build passed; ten Python unit tests passed, including HTTP 403 handling, TLS/network
-failure handling, readiness retry, browser
-exit and stale-renderer termination; both shell files passed Bash syntax checks.
+build passed; Python unit tests covered Wayland readiness retry, normal Chromium TLS
+flags, browser exit and stale-renderer termination; both shell files passed Bash
+syntax checks.
 The built player displayed its PIN form, advanced its frame marker, and reported
 no browser console errors. Native systemd/labwc behavior and physical Pi startup,
 power-loss, HDMI/DSI and codec tests have not been run here.

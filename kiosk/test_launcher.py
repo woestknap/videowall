@@ -4,7 +4,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 import ssl
 
 import launcher
@@ -48,36 +48,21 @@ class WatchdogTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'display output'):
             launcher.ready()
 
-    @patch('launcher.urllib.request.urlopen')
+    @patch('launcher.urllib.request.urlopen', side_effect=URLError(ssl.SSLCertVerificationError('certificate invalid')))
     @patch('launcher.subprocess.run')
-    def test_readiness_defers_html_validation_to_browser(self, run, urlopen):
+    def test_certificate_failure_in_a_python_client_still_allows_chromium_startup(self, run, urlopen):
         run.return_value = Mock(returncode=0, stdout='wl_output')
-        response = urlopen.return_value.__enter__.return_value
-        response.status = 200
-        response.read.return_value = b'<html>Sign in to Wi-Fi</html>'
-        launcher.ready()
-        response.read.assert_not_called()
-
-    @patch('launcher.urllib.request.urlopen')
-    @patch('launcher.subprocess.run')
-    def test_http_errors_allow_browser_to_attempt_navigation(self, run, urlopen):
-        run.return_value = Mock(returncode=0, stdout='wl_output')
-        for code in (403, 429, 503):
-            with self.subTest(code=code):
-                error = HTTPError(launcher.URL, code, 'HTTP response', {}, None)
-                urlopen.side_effect = error
-                launcher.ready()
-
-    @patch('launcher.urllib.request.urlopen')
-    @patch('launcher.subprocess.run')
-    def test_network_and_certificate_errors_still_block_launch(self, run, urlopen):
-        run.return_value = Mock(returncode=0, stdout='wl_output')
-        for error in (URLError('DNS unavailable'), TimeoutError('connection timeout'),
-                      URLError(ssl.SSLCertVerificationError('certificate invalid'))):
-            with self.subTest(error=error):
-                urlopen.side_effect = error
-                with self.assertRaises(type(error)):
-                    launcher.ready()
+        with tempfile.TemporaryDirectory() as folder:
+            browser = Mock()
+            browser.poll.return_value = 1
+            browser.returncode = 1
+            with patch('launcher.PROFILE', Path(folder)), \
+                    patch('launcher.notify_watchdog'), \
+                    patch('launcher.subprocess.Popen', return_value=browser) as launch:
+                with self.assertRaisesRegex(RuntimeError, 'Chromium exited: 1'):
+                    launcher.main()
+                launch.assert_called_once()
+        urlopen.assert_not_called()
 
     def test_unhealthy_renderer_exits_and_terminates_browser(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -88,6 +73,7 @@ class WatchdogTests(unittest.TestCase):
             def launch(command):
                 self.assertIn('--password-store=basic', command)
                 self.assertIn(f'--user-data-dir={profile}', command)
+                self.assertNotIn('--ignore-certificate-errors', command)
                 (profile / 'DevToolsActivePort').write_text('1234\n')
                 return browser
 
@@ -101,18 +87,18 @@ class WatchdogTests(unittest.TestCase):
             browser.terminate.assert_called_once()
             browser.wait.assert_called_once_with(timeout=5)
 
-    def test_network_wait_retries_before_launch_and_browser_exit_is_failure(self):
+    def test_wayland_wait_retries_before_launch_and_browser_exit_is_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             browser = Mock()
             browser.poll.return_value = 1
             browser.returncode = 1
             with patch('launcher.PROFILE', Path(folder)), \
-                    patch('launcher.ready', side_effect=[OSError('offline'), None]) as ready, \
+                    patch('launcher.subprocess.run', side_effect=[OSError('Wayland unavailable'), Mock(returncode=0, stdout='wl_output')]) as wayland, \
                     patch('launcher.notify_watchdog'), patch('launcher.time.sleep') as sleep, \
                     patch('launcher.subprocess.Popen', return_value=browser) as launch:
                 with self.assertRaisesRegex(RuntimeError, 'Chromium exited: 1'):
                     launcher.main()
-                self.assertEqual(ready.call_count, 2)
+                self.assertEqual(wayland.call_count, 2)
                 sleep.assert_called_once_with(5)
                 launch.assert_called_once()
 
