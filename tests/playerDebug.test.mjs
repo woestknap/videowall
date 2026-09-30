@@ -67,4 +67,7 @@ test('playlist diagnostics expose display and preparation state without secrets'
   assert.equal(rows.find(row => row.label === 'Ready')?.value, '4 / 5')
   assert.equal(rows.find(row => row.label === 'Generation')?.value, '12345678…')
   assert.equal(rows.some(row => row.label.toLowerCase().includes('token')), false)
+  const armedRows = playlistDebugRows({ ...runtime, phase: 'ARMED', activation_at: new Date(Date.now() + 1200).toISOString() })
+  assert.equal(armedRows.find(row => row.label === 'Phase')?.value, 'ARMED')
+  assert.match(armedRows.find(row => row.label === 'Starts in')?.value ?? '', /^00:0[01]\.[0-9]$/)
 })

@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { formatPlaylistRemaining, playlistRemainingMs, playlistRuntimeLabel } from '../src/lib/playlistRuntime.ts'
+import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistPollIntervalMs, playlistRemainingMs, playlistRuntimeLabel } from '../src/lib/playlistRuntime.ts'
 
 const runtime = {
   wall_id: 'wall', playlist_id: 'playlist', playlist_name: 'Morning', status: 'PLAYING', phase: 'DISPLAYING',
   generation: 'generation', sequence: 4, current_index: 1, item_count: 3, current_item_id: 'item', current_scene_id: 'scene', current_scene_name: 'Promo',
   target_index: null, target_item_id: null, target_scene_id: null, target_scene_name: null, loading_scene_id: null,
   started_at: '2026-09-28T10:00:00Z', next_transition_at: '2026-09-28T10:01:30Z', paused_remaining_ms: null,
-  transition_deadline_at: null, expected_count: 2, ready_count: 2, failed_device_ids: [], degraded: false, updated_at: '2026-09-28T10:00:00Z',
+  transition_deadline_at: null, activation_at: null, expected_count: 2, ready_count: 2, failed_device_ids: [], degraded: false, updated_at: '2026-09-28T10:00:00Z',
 }
 
 test('countdown derives locally from authoritative timestamps and pause retains remaining time', () => {
@@ -94,7 +94,7 @@ test('only actively heartbeating players join a fixed transition snapshot', asyn
   const sql = await readFile(new URL('../supabase/migrations/20260928150000_playlist_runtime.sql', import.meta.url), 'utf8')
   const player = await readFile(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
   const dashboard = await readFile(new URL('../src/admin/Admin.tsx', import.meta.url), 'utf8')
-  assert.match(player, /setInterval\(\(\) => void refresh\(\), 4000\)/)
+  assert.match(player, /playlistPollIntervalMs\(runtime\)/)
   assert.match(player, /await client\.rpc\('player_heartbeat'/)
   assert.match(sql, /playlist_transition_participant_window[\s\S]*interval '12 seconds'/i)
   assert.match(sql, /included_in_wall is not false[\s\S]*last_seen_at >= transition_started - public\.playlist_transition_participant_window\(\)/i)
@@ -102,6 +102,48 @@ test('only actively heartbeating players join a fixed transition snapshot', asyn
   assert.match(dashboard, /Date\.now\(\) - lastSeenAt <= 10 \* 60 \* 1000/)
   assert.match(sql, /expected_device_ids = expected_devices[\s\S]*ready_device_ids = '\{\}'[\s\S]*failed_device_ids = '\{\}'/i)
   assert.match(sql, /if cardinality\(expected_devices\) = 0 then[\s\S]*commit_playlist_transition_locked/i)
+})
+
+test('synchronized activation arms once, anchors duration, and preserves interruption semantics', async () => {
+  const sql = await readFile(new URL('../supabase/migrations/20260930100000_playlist_synchronized_activation.sql', import.meta.url), 'utf8')
+  const armBody = sql.slice(sql.indexOf('create or replace function public.arm_playlist_transition_locked'), sql.indexOf('create or replace function public.commit_playlist_transition_locked'))
+  const reportBody = sql.slice(sql.indexOf('create or replace function public.report_playlist_ready'), sql.indexOf('create or replace function public.go_live_manual'))
+  assert.match(sql, /add column activation_at timestamptz/i)
+  assert.match(sql, /check \(phase in \('DISPLAYING', 'PREPARING', 'ARMED'\)\)/i)
+  assert.match(armBody, /phase = 'ARMED'.*activation_at = armed_at \+ public\.playlist_activation_lead_time\(\)/is)
+  assert.doesNotMatch(armBody, /insert into public\.wall_state/i)
+  assert.match(reportBody, /if all_ready then return public\.arm_playlist_transition_locked/i)
+  assert.match(sql, /runtime\.phase = 'ARMED'.*public\.commit_playlist_transition_locked/is)
+  assert.match(sql, /shared_activation := runtime\.activation_at.*started_at = shared_activation.*next_transition_at = case when pause_after_transition then null else shared_activation \+ make_interval/is)
+  assert.match(sql, /degraded = cardinality\(failed\) > 0.*failed_device_ids = failed.*arm_playlist_transition_locked/is)
+  assert.match(sql, /runtime\.phase in \('PREPARING', 'ARMED'\).*pause_after_transition = true/is)
+  assert.match(sql, /stop_playlist.*activation_at = null/is)
+  assert.match(sql, /go_live_manual.*activation_at = null/is)
+})
+
+test('players use transition-only fast polling and deterministic activation helpers', () => {
+  const armed = { ...runtime, phase: 'ARMED', activation_at: '2026-09-28T10:00:01.500Z' }
+  assert.equal(playlistPollIntervalMs(runtime), 4000)
+  assert.equal(playlistPollIntervalMs({ ...runtime, phase: 'PREPARING' }), 400)
+  assert.equal(playlistPollIntervalMs(armed), 400)
+  assert.equal(playlistActivationRemainingMs(armed, Date.parse('2026-09-28T10:00:00.300Z')), 1200)
+  assert.equal(playlistActivationRemainingMs(armed, Date.parse('2026-09-28T10:00:02Z')), 0)
+  assert.equal(formatPlaylistActivationRemaining(1200), '00:01.2')
+  assert.equal(playlistRuntimeLabel(armed), 'ARMED')
+})
+
+test('video readiness waits for current-frame data and player crossfade remains local presentation', async () => {
+  const helper = await readFile(new URL('../src/lib/playlistRuntime.ts', import.meta.url), 'utf8')
+  const player = await readFile(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
+  const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8')
+  assert.match(helper, /preload = 'auto'/)
+  assert.match(helper, /loadeddata/)
+  assert.match(helper, /readyState >= HTMLMediaElement\.HAVE_CURRENT_DATA/)
+  assert.doesNotMatch(helper, /video\.play\(/)
+  assert.match(player, /activationAt - \(performance\.now\(\) \+ serverEpochOffsetRef\.current\)/)
+  assert.match(player, /setScene\(playlistTargetScene\)/)
+  assert.match(styles, /playlist-scene-fade-in 350ms/)
+  assert.match(styles, /prefers-reduced-motion: reduce/)
 })
 
 test('loading, expected-player readiness, timeout degradation and catch-up are encoded', async () => {

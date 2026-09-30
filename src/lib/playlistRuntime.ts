@@ -1,6 +1,24 @@
 import type { PlaylistRuntime, Scene } from '../types'
 
 export const PLAYLIST_TRANSITION_TIMEOUT_MS = 15_000
+export const PLAYLIST_ACTIVATION_LEAD_MS = 1_500
+export const PLAYLIST_NORMAL_POLL_MS = 4_000
+export const PLAYLIST_TRANSITION_POLL_MS = 400
+export const PLAYLIST_FADE_MS = 350
+
+export function playlistPollIntervalMs(runtime: PlaylistRuntime | null) {
+  return runtime && (runtime.phase === 'PREPARING' || runtime.phase === 'ARMED') ? PLAYLIST_TRANSITION_POLL_MS : PLAYLIST_NORMAL_POLL_MS
+}
+
+export function playlistActivationRemainingMs(runtime: PlaylistRuntime | null, serverNowMs: number) {
+  if (!runtime || runtime.phase !== 'ARMED' || !runtime.activation_at) return null
+  const activationAt = Date.parse(runtime.activation_at)
+  return Number.isFinite(activationAt) ? Math.max(0, activationAt - serverNowMs) : null
+}
+
+export function formatPlaylistActivationRemaining(milliseconds: number | null) {
+  return milliseconds === null ? '—' : `00:${(milliseconds / 1000).toFixed(1).padStart(4, '0')}`
+}
 
 export function playlistRemainingMs(runtime: PlaylistRuntime | null, nowMs = Date.now()) {
   if (!runtime || runtime.status === 'STOPPED') return null
@@ -20,6 +38,7 @@ export function formatPlaylistRemaining(milliseconds: number | null) {
 export function playlistRuntimeLabel(runtime: PlaylistRuntime | null) {
   if (!runtime) return 'STOPPED'
   if (runtime.phase === 'PREPARING') return runtime.status === 'PAUSED' ? 'PAUSED · PREPARING' : 'PREPARING'
+  if (runtime.phase === 'ARMED') return runtime.status === 'PAUSED' ? 'PAUSED · ARMED' : 'ARMED'
   return runtime.status
 }
 
@@ -35,10 +54,13 @@ function waitForImage(url: string) {
 function waitForVideo(url: string) {
   return new Promise<void>((resolve, reject) => {
     const video = document.createElement('video')
-    const done = (error?: Error) => { video.removeAttribute('src'); video.load(); error ? reject(error) : resolve() }
-    video.preload = 'metadata'; video.muted = true
-    video.addEventListener('loadedmetadata', () => done(), { once: true })
-    video.addEventListener('error', () => done(new Error('video-metadata-failed')), { once: true })
+    let settled = false
+    const done = (error?: Error) => { if (settled) return; settled = true; video.removeEventListener('loadeddata', ready); video.removeEventListener('error', failed); video.removeAttribute('src'); video.load(); error ? reject(error) : resolve() }
+    const ready = () => { if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) done() }
+    const failed = () => done(new Error('video-first-frame-failed'))
+    video.preload = 'auto'; video.muted = true; video.playsInline = true
+    video.addEventListener('loadeddata', ready)
+    video.addEventListener('error', failed)
     video.src = url; video.load()
   })
 }

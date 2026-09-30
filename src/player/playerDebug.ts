@@ -1,5 +1,5 @@
 import type { PlaylistRuntime, Scene, SceneLayer } from '../types'
-import { formatPlaylistRemaining, playlistRemainingMs } from '../lib/playlistRuntime.ts'
+import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistRemainingMs } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { compactMetric, type ReceiverPerformanceStats } from '../lib/livePerformanceStats.ts'
 
@@ -120,6 +120,9 @@ export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.
     rows.push({ label: 'Target', value: runtime.target_scene_name ?? shortDebugId(runtime.target_scene_id) })
     rows.push({ label: 'Ready', value: `${runtime.ready_count} / ${runtime.expected_count}` })
     rows.push({ label: 'Timeout', value: runtime.transition_deadline_at ? formatPlaylistRemaining(Math.max(0, Date.parse(runtime.transition_deadline_at) - nowMs)) : '—' })
+  } else if (runtime.phase === 'ARMED') {
+    rows.push({ label: 'Target', value: runtime.target_scene_name ?? shortDebugId(runtime.target_scene_id) })
+    rows.push({ label: 'Starts in', value: formatPlaylistActivationRemaining(playlistActivationRemainingMs(runtime, nowMs)) })
   } else rows.push({ label: 'Next', value: formatPlaylistRemaining(playlistRemainingMs(runtime, nowMs)) })
   if (runtime.degraded) rows.push({ label: 'Transition', value: 'DEGRADED', detail: `${runtime.failed_device_ids.length} player(s) missed readiness` })
   return rows

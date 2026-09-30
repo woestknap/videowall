@@ -121,7 +121,7 @@ export type PlaylistRuntime = {
   playlist_id: string | null
   playlist_name: string
   status: 'PLAYING' | 'PAUSED' | 'STOPPED'
-  phase: 'DISPLAYING' | 'PREPARING'
+  phase: 'DISPLAYING' | 'PREPARING' | 'ARMED'
   generation: string
   sequence: number
   current_index: number
@@ -138,6 +138,7 @@ export type PlaylistRuntime = {
   next_transition_at: string | null
   paused_remaining_ms: number | null
   transition_deadline_at: string | null
+  activation_at: string | null
   expected_count: number
   ready_count: number
   failed_device_ids: string[]
