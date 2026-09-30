@@ -60,12 +60,13 @@ test('media states remain compact and debug-disabled player rendering does not s
   assert.match(player, /onMediaStateChange=\{debug \? setMediaStatus : undefined\}/)
   assert.match(player, /onStatus=\{debug \? setLiveSourceStatus : ignoreLiveSourceStatus\}/)
 })
-test('playlist diagnostics expose display and preparation state without secrets', () => {
-  const runtime = { playlist_name: 'Morning', status: 'PLAYING', phase: 'PREPARING', generation: '123456789012', sequence: 4, current_index: 0, item_count: 5, target_scene_id: 'target-scene', target_scene_name: 'Promo', ready_count: 4, expected_count: 5, transition_deadline_at: new Date(Date.now() + 5000).toISOString(), failed_device_ids: [], degraded: false }
+test('playlist diagnostics expose display, loader, and activation state without secrets', () => {
+  const runtime = { playlist_name: 'Morning', status: 'PLAYING', phase: 'PREPARING', generation: '123456789012', sequence: 4, current_index: 0, item_count: 5, target_scene_id: 'target-scene', target_scene_name: 'Promo', loading_scene_id: 'loading-scene', loading_at: new Date(Date.now() + 600).toISOString(), activation_at: null, ready_count: 4, expected_count: 5, transition_deadline_at: new Date(Date.now() + 5000).toISOString(), failed_device_ids: [], degraded: false }
   const rows = playlistDebugRows(runtime)
   assert.equal(rows.find(row => row.label === 'Playlist')?.value, 'Morning')
   assert.equal(rows.find(row => row.label === 'Ready')?.value, '4 / 5')
   assert.equal(rows.find(row => row.label === 'Generation')?.value, '12345678…')
+  assert.match(rows.find(row => row.label === 'Loader')?.value ?? '', /^IN 00:0[01]\.[0-9]$/)
   assert.equal(rows.some(row => row.label.toLowerCase().includes('token')), false)
   const armedRows = playlistDebugRows({ ...runtime, phase: 'ARMED', activation_at: new Date(Date.now() + 1200).toISOString() })
   assert.equal(armedRows.find(row => row.label === 'Phase')?.value, 'ARMED')

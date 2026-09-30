@@ -138,6 +138,7 @@ export type PlaylistRuntime = {
   next_transition_at: string | null
   paused_remaining_ms: number | null
   transition_deadline_at: string | null
+  loading_at: string | null
   activation_at: string | null
   expected_count: number
   ready_count: number

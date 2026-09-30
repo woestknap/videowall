@@ -2,9 +2,33 @@ import type { PlaylistRuntime, Scene } from '../types'
 
 export const PLAYLIST_TRANSITION_TIMEOUT_MS = 15_000
 export const PLAYLIST_ACTIVATION_LEAD_MS = 1_500
+export const PLAYLIST_LOADING_LEAD_MS = 900
 export const PLAYLIST_NORMAL_POLL_MS = 4_000
 export const PLAYLIST_TRANSITION_POLL_MS = 400
 export const PLAYLIST_FADE_MS = 350
+
+export type PlaylistLoadingOverlayState = { mounted: boolean; opacity: number; phase: 'HIDDEN' | 'WAITING' | 'FADING_IN' | 'VISIBLE' | 'FADING_OUT'; nextAtMs: number | null; animate: boolean }
+
+export function playlistLoadingOverlayState(runtime: PlaylistRuntime | null, serverNowMs: number, reducedMotion = false): PlaylistLoadingOverlayState {
+  if (!runtime || runtime.status === 'STOPPED' || !runtime.loading_at) return { mounted: false, opacity: 0, phase: 'HIDDEN', nextAtMs: null, animate: false }
+  const loadingAt = Date.parse(runtime.loading_at)
+  const activationAt = runtime.activation_at ? Date.parse(runtime.activation_at) : NaN
+  if (!Number.isFinite(loadingAt)) return { mounted: false, opacity: 0, phase: 'HIDDEN', nextAtMs: null, animate: false }
+  const transitionActive = runtime.phase === 'PREPARING' || runtime.phase === 'ARMED'
+  const fadingAfterActivation = runtime.phase === 'DISPLAYING' && Number.isFinite(activationAt) && serverNowMs < activationAt + (reducedMotion ? 0 : PLAYLIST_FADE_MS)
+  if (!transitionActive && !fadingAfterActivation) return { mounted: false, opacity: 0, phase: 'HIDDEN', nextAtMs: null, animate: false }
+  if (serverNowMs < loadingAt) return { mounted: true, opacity: 0, phase: 'WAITING', nextAtMs: loadingAt, animate: false }
+  if (reducedMotion) {
+    if (Number.isFinite(activationAt) && serverNowMs >= activationAt) return { mounted: false, opacity: 0, phase: 'HIDDEN', nextAtMs: null, animate: false }
+    return { mounted: true, opacity: 1, phase: 'VISIBLE', nextAtMs: Number.isFinite(activationAt) ? activationAt : null, animate: false }
+  }
+  const fadeInEnds = loadingAt + PLAYLIST_FADE_MS
+  if (serverNowMs < fadeInEnds) return { mounted: true, opacity: Math.max(0, Math.min(1, (serverNowMs - loadingAt) / PLAYLIST_FADE_MS)), phase: 'FADING_IN', nextAtMs: fadeInEnds, animate: true }
+  if (!Number.isFinite(activationAt) || serverNowMs < activationAt) return { mounted: true, opacity: 1, phase: 'VISIBLE', nextAtMs: Number.isFinite(activationAt) ? activationAt : null, animate: false }
+  const fadeOutEnds = activationAt + PLAYLIST_FADE_MS
+  if (serverNowMs < fadeOutEnds) return { mounted: true, opacity: Math.max(0, Math.min(1, 1 - (serverNowMs - activationAt) / PLAYLIST_FADE_MS)), phase: 'FADING_OUT', nextAtMs: fadeOutEnds, animate: true }
+  return { mounted: false, opacity: 0, phase: 'HIDDEN', nextAtMs: null, animate: false }
+}
 
 export function playlistPollIntervalMs(runtime: PlaylistRuntime | null) {
   return runtime && (runtime.phase === 'PREPARING' || runtime.phase === 'ARMED') ? PLAYLIST_TRANSITION_POLL_MS : PLAYLIST_NORMAL_POLL_MS

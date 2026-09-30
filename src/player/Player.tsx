@@ -7,7 +7,7 @@ import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type P
 import { recoveryDelayMs } from '../lib/recovery'
 import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, type VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { geometryDebugRows, liveDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState, type LiveSourceDiagnostic } from './playerDebug'
-import { PLAYLIST_FADE_MS, playlistActivationRemainingMs, playlistPollIntervalMs, preparePlaylistScene } from '../lib/playlistRuntime'
+import { playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, preparePlaylistScene, type PlaylistLoadingOverlayState } from '../lib/playlistRuntime'
 import { liveSessionConnectionIdentity, liveSessionLeaseIsActive } from '../lib/liveSessionConnection'
 import { mergeStatsReports, normalizeReceiverStats } from '../lib/livePerformanceStats'
 
@@ -100,17 +100,25 @@ function PlayerDebugOverlay({ device, deviceName, wallId, scene, playlistRuntime
   return <aside className="player-debug" aria-label="ScreenMesh player diagnostics"><header><strong>SCREENMESH PLAYER</strong><b>{health}</b></header><DebugSection title="Device" rows={[{ label: 'Status', value: device ? 'PAIRED' : 'UNPAIRED' }, { label: 'Name', value: deviceName ?? 'Unknown device' }, { label: 'ID', value: shortDebugId(device?.id) }, { label: 'Wall', value: wallId ? shortDebugId(wallId) : 'No wall' }, { label: 'Scene', value: scene ? `${scene.name} (${shortDebugId(scene.id)})` : 'No active scene' }, { label: 'Polling', value: status }]} /><DebugSection title="Geometry" rows={geometryRows} /><DebugSection title="Playlist" rows={playlistDebugRows(playlistRuntime)} /><DebugSection title="Legacy runtime" rows={[{ label: 'Signaling', value: signalingStatus.toUpperCase() }, { label: 'WebRTC', value: webRtcConnectionState.toUpperCase() }, { label: 'ICE', value: iceConnectionState.toUpperCase() }]} /><DebugSection title="Live sources" rows={liveRows.length ? liveRows : [{ label: 'Sources', value: 'None' }]} /><DebugSection title="Media" rows={mediaRows} /></aside>
 }
 
-function PlayerSceneSurface({ scene, fadeEnabled, ...props }: { scene: Scene; fadeEnabled: boolean } & Omit<ScenePreviewProps, 'scene' | 'player'>) {
-  const [current, setCurrent] = useState(scene)
-  const [outgoing, setOutgoing] = useState<Scene | null>(null)
+function PlaylistLoadingOverlay({ runtime, scene, serverEpochOffsetMs, ...props }: { runtime: PlaylistRuntime | null; scene: Scene | null; serverEpochOffsetMs: number } & Omit<ScenePreviewProps, 'scene' | 'player' | 'serverEpochOffsetMs'>) {
+  const [presentation, setPresentation] = useState<PlaylistLoadingOverlayState>(() => playlistLoadingOverlayState(runtime, performance.now() + serverEpochOffsetMs))
   useEffect(() => {
-    if (scene.id === current.id) { setCurrent(scene); return }
-    if (!fadeEnabled) { setOutgoing(null); setCurrent(scene); return }
-    setOutgoing(current); setCurrent(scene)
-    const timer = window.setTimeout(() => setOutgoing(null), PLAYLIST_FADE_MS)
-    return () => window.clearTimeout(timer)
-  }, [scene.id, fadeEnabled])
-  return <div className="playlist-scene-surface">{outgoing && <div className="playlist-scene-layer is-outgoing"><ScenePreview {...props} scene={outgoing} player /></div>}<div className={`playlist-scene-layer ${outgoing ? 'is-incoming' : ''}`} key={current.id}><ScenePreview {...props} scene={current} player /></div></div>
+    let frame = 0, timer = 0, stopped = false
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const update = () => {
+      if (stopped) return
+      const now = performance.now() + serverEpochOffsetMs
+      const next = playlistLoadingOverlayState(runtime, now, reducedMotion)
+      setPresentation(next)
+      if (next.animate) frame = requestAnimationFrame(update)
+      else if (next.nextAtMs !== null && next.nextAtMs > now) timer = window.setTimeout(update, next.nextAtMs - now)
+    }
+    update()
+    return () => { stopped = true; cancelAnimationFrame(frame); window.clearTimeout(timer) }
+  }, [runtime?.generation, runtime?.sequence, runtime?.phase, runtime?.status, runtime?.loading_at, runtime?.activation_at, serverEpochOffsetMs])
+  if (!scene || !presentation.mounted) return null
+  const mutedScene = { ...scene, layers: scene.layers.map(layer => layer.type === 'video' ? { ...layer, content: { ...layer.content, muted: true } } : layer) }
+  return <div className="playlist-loading-overlay" data-overlay-phase={presentation.phase} style={{ opacity: presentation.opacity }} aria-hidden="true"><ScenePreview {...props} scene={mutedScene} player serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={runtime?.loading_at ? Date.parse(runtime.loading_at) : 0} /></div>
 }
 
 export function Player() {
@@ -140,6 +148,7 @@ export function Player() {
   const [sceneStartedAtMs, setSceneStartedAtMs] = useState(0)
   const [playlistRuntime, setPlaylistRuntime] = useState<PlaylistRuntime | null>(null)
   const [playlistTargetScene, setPlaylistTargetScene] = useState<Scene | null>(null)
+  const [playlistLoadingScene, setPlaylistLoadingScene] = useState<Scene | null>(null)
   const reportedPreparationRef = useRef('')
   const preloadedLoadingRef = useRef('')
   const [liveSession, setLiveSession] = useState<LiveSessionLease | null>(null)
@@ -223,6 +232,7 @@ export function Player() {
       else if (data?.scene_started_at) setSceneStartedAtMs(new Date(data.scene_started_at).getTime())
       setPlaylistRuntime(runtime ?? null)
       setPlaylistTargetScene(targetScene)
+      setPlaylistLoadingScene(data?.loading_scene ? { ...data.loading_scene, layers: data.loading_scene.layers as SceneLayer[] } : null)
       let effectiveRuntime = runtime
       if (runtime && runtime.status !== 'STOPPED') {
         const { data: advanced } = await client.rpc('advance_playlist_if_due', { requested_device_id: device.id, requested_token: device.token, expected_generation: runtime.generation, expected_sequence: runtime.sequence })
@@ -458,5 +468,5 @@ export function Player() {
   if (safeMode) return <>{debugPanel}<main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>ScreenMesh player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main></>
   const liveRuntimes = liveSessions.map(lease => <PlayerLiveSession key={lease.sessionId} device={device} lease={lease} disabled={safeMode || videosDisabled} diagnosticsEnabled={debug} onStream={registerLiveStream} onRemove={removeLiveStream} onStatus={debug ? setLiveSourceStatus : ignoreLiveSourceStatus} onDiagnostic={debug ? setLiveSourceDiagnostic : ignoreLiveSourceDiagnostic} />)
   if (scene && v2Contract?.status === 'invalid') return <>{liveRuntimes}<main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
-  return scene ? <>{liveRuntimes}<PlayerSceneSurface scene={scene} fadeEnabled={Boolean(playlistRuntime && playlistRuntime.status !== 'STOPPED')} deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} onLivePresentationFps={debug ? setLivePresentationFps : undefined} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
+  return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} onLivePresentationFps={debug ? setLivePresentationFps : undefined} /><PlaylistLoadingOverlay runtime={playlistRuntime} scene={playlistLoadingScene} deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} serverEpochOffsetMs={serverEpochOffsetMs} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
 }

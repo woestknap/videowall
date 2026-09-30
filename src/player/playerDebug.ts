@@ -1,5 +1,5 @@
 import type { PlaylistRuntime, Scene, SceneLayer } from '../types'
-import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistRemainingMs } from '../lib/playlistRuntime.ts'
+import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistRemainingMs } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { compactMetric, type ReceiverPerformanceStats } from '../lib/livePerformanceStats.ts'
 
@@ -118,6 +118,8 @@ export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.
   ]
   if (runtime.phase === 'PREPARING') {
     rows.push({ label: 'Target', value: runtime.target_scene_name ?? shortDebugId(runtime.target_scene_id) })
+    const loader = playlistLoadingOverlayState(runtime, nowMs)
+    rows.push({ label: 'Loader', value: loader.phase === 'WAITING' && loader.nextAtMs !== null ? `IN ${formatPlaylistActivationRemaining(Math.max(0, loader.nextAtMs - nowMs))}` : loader.phase === 'FADING_IN' ? 'FADING IN' : loader.mounted ? 'VISIBLE' : 'NONE' })
     rows.push({ label: 'Ready', value: `${runtime.ready_count} / ${runtime.expected_count}` })
     rows.push({ label: 'Timeout', value: runtime.transition_deadline_at ? formatPlaylistRemaining(Math.max(0, Date.parse(runtime.transition_deadline_at) - nowMs)) : '—' })
   } else if (runtime.phase === 'ARMED') {

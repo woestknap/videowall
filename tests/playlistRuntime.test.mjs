@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistPollIntervalMs, playlistRemainingMs, playlistRuntimeLabel } from '../src/lib/playlistRuntime.ts'
+import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, playlistRemainingMs, playlistRuntimeLabel } from '../src/lib/playlistRuntime.ts'
 
 const runtime = {
   wall_id: 'wall', playlist_id: 'playlist', playlist_name: 'Morning', status: 'PLAYING', phase: 'DISPLAYING',
   generation: 'generation', sequence: 4, current_index: 1, item_count: 3, current_item_id: 'item', current_scene_id: 'scene', current_scene_name: 'Promo',
   target_index: null, target_item_id: null, target_scene_id: null, target_scene_name: null, loading_scene_id: null,
   started_at: '2026-09-28T10:00:00Z', next_transition_at: '2026-09-28T10:01:30Z', paused_remaining_ms: null,
-  transition_deadline_at: null, activation_at: null, expected_count: 2, ready_count: 2, failed_device_ids: [], degraded: false, updated_at: '2026-09-28T10:00:00Z',
+  transition_deadline_at: null, loading_at: null, activation_at: null, expected_count: 2, ready_count: 2, failed_device_ids: [], degraded: false, updated_at: '2026-09-28T10:00:00Z',
 }
 
 test('countdown derives locally from authoritative timestamps and pause retains remaining time', () => {
@@ -121,6 +121,24 @@ test('synchronized activation arms once, anchors duration, and preserves interru
   assert.match(sql, /go_live_manual.*activation_at = null/is)
 })
 
+test('corrective loading-overlay migration preserves the current wall scene until activation', async () => {
+  const sql = await readFile(new URL('../supabase/migrations/20260930110000_playlist_loading_overlay.sql', import.meta.url), 'utf8')
+  const beginBody = sql.slice(sql.indexOf('create or replace function public.begin_playlist_transition_locked'), sql.indexOf('create or replace function public.commit_playlist_transition_locked'))
+  const commitBody = sql.slice(sql.indexOf('create or replace function public.commit_playlist_transition_locked'), sql.indexOf('create or replace function public.start_playlist'))
+  assert.match(sql, /add column loading_at timestamptz/i)
+  assert.match(sql, /playlist_loading_lead_time\(\)[\s\S]*interval '900 milliseconds'/i)
+  assert.match(sql, /'loading_at', runtime\.loading_at/i)
+  assert.match(beginBody, /loading_at = transition_started \+ public\.playlist_loading_lead_time\(\)/i)
+  assert.doesNotMatch(beginBody, /insert into public\.wall_state/i)
+  assert.match(commitBody, /shared_activation := runtime\.activation_at/i)
+  assert.match(commitBody, /values \(runtime\.wall_id, runtime\.target_scene_id, 'playlist'/i)
+  assert.match(commitBody, /started_at = shared_activation[\s\S]*next_transition_at = case when pause_after_transition then null else shared_activation \+ make_interval/is)
+  assert.doesNotMatch(commitBody, /loading_at = null|activation_at = null/i)
+  assert.match(sql, /create or replace function public\.stop_playlist[\s\S]*loading_at = null,[\s\S]*activation_at = null/i)
+  assert.match(sql, /create or replace function public\.go_live_manual[\s\S]*loading_at = null,[\s\S]*activation_at = null/i)
+  assert.match(sql, /degraded = cardinality\(failed\) > 0[\s\S]*arm_playlist_transition_locked/is)
+})
+
 test('players use transition-only fast polling and deterministic activation helpers', () => {
   const armed = { ...runtime, phase: 'ARMED', activation_at: '2026-09-28T10:00:01.500Z' }
   assert.equal(playlistPollIntervalMs(runtime), 4000)
@@ -132,7 +150,7 @@ test('players use transition-only fast polling and deterministic activation help
   assert.equal(playlistRuntimeLabel(armed), 'ARMED')
 })
 
-test('video readiness waits for current-frame data and player crossfade remains local presentation', async () => {
+test('loading overlay uses shared timestamps while ordinary scene activation has no crossfade', async () => {
   const helper = await readFile(new URL('../src/lib/playlistRuntime.ts', import.meta.url), 'utf8')
   const player = await readFile(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
   const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8')
@@ -142,8 +160,31 @@ test('video readiness waits for current-frame data and player crossfade remains 
   assert.doesNotMatch(helper, /video\.play\(/)
   assert.match(player, /activationAt - \(performance\.now\(\) \+ serverEpochOffsetRef\.current\)/)
   assert.match(player, /setScene\(playlistTargetScene\)/)
-  assert.match(styles, /playlist-scene-fade-in 350ms/)
-  assert.match(styles, /prefers-reduced-motion: reduce/)
+  assert.match(player, /function PlaylistLoadingOverlay/)
+  assert.match(player, /className="playlist-loading-overlay"/)
+  assert.doesNotMatch(player, /PlayerSceneSurface/)
+  assert.doesNotMatch(styles, /playlist-scene-fade|@keyframes playlist-scene/i)
+  assert.match(styles, /\.playlist-loading-overlay[\s\S]*will-change: opacity/i)
+})
+
+test('loading overlay timing is deterministic for normal, late, and reduced-motion players', () => {
+  const loadingAt = '2026-09-28T10:00:01.000Z'
+  const activationAt = '2026-09-28T10:00:03.000Z'
+  const preparing = { ...runtime, phase: 'PREPARING', loading_scene_id: 'loader', loading_at: loadingAt }
+  const armed = { ...preparing, phase: 'ARMED', activation_at: activationAt }
+  const displaying = { ...armed, phase: 'DISPLAYING', current_scene_id: 'target' }
+
+  assert.deepEqual(playlistLoadingOverlayState(preparing, Date.parse('2026-09-28T10:00:00.500Z')), { phase: 'WAITING', mounted: true, opacity: 0, nextAtMs: Date.parse(loadingAt), animate: false })
+  assert.equal(playlistLoadingOverlayState(preparing, Date.parse(loadingAt)).phase, 'FADING_IN')
+  assert.equal(playlistLoadingOverlayState(preparing, Date.parse('2026-09-28T10:00:01.175Z')).opacity, 0.5)
+  assert.deepEqual(playlistLoadingOverlayState(preparing, Date.parse('2026-09-28T10:00:01.350Z')), { phase: 'VISIBLE', mounted: true, opacity: 1, nextAtMs: null, animate: false })
+  assert.equal(playlistLoadingOverlayState(armed, Date.parse('2026-09-28T10:00:02.999Z')).phase, 'VISIBLE')
+  assert.equal(playlistLoadingOverlayState(armed, Date.parse(activationAt)).opacity, 1)
+  assert.equal(playlistLoadingOverlayState(displaying, Date.parse('2026-09-28T10:00:03.175Z')).opacity, 0.5)
+  assert.deepEqual(playlistLoadingOverlayState(displaying, Date.parse('2026-09-28T10:00:03.350Z')), { phase: 'HIDDEN', mounted: false, opacity: 0, nextAtMs: null, animate: false })
+  assert.deepEqual(playlistLoadingOverlayState(displaying, Date.parse('2026-09-28T10:00:10.000Z')), { phase: 'HIDDEN', mounted: false, opacity: 0, nextAtMs: null, animate: false })
+  assert.equal(playlistLoadingOverlayState(armed, Date.parse('2026-09-28T10:00:02.000Z'), true).phase, 'VISIBLE')
+  assert.equal(playlistLoadingOverlayState(displaying, Date.parse(activationAt), true).phase, 'HIDDEN')
 })
 
 test('loading, expected-player readiness, timeout degradation and catch-up are encoded', async () => {
