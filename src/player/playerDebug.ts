@@ -1,6 +1,7 @@
 import type { PlaylistRuntime, Scene, SceneLayer } from '../types'
 import { formatPlaylistRemaining, playlistRemainingMs } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
+import { compactMetric, type ReceiverPerformanceStats } from '../lib/livePerformanceStats.ts'
 
 export type DebugRow = { label: string; value: string; detail?: string }
 export type LiveDebugState = 'WAITING' | 'CONNECTING' | 'CONNECTED' | 'NEGOTIATING' | 'STREAMING' | 'RECONNECTING' | 'ENDED' | 'ERROR'
@@ -16,6 +17,7 @@ export type LiveSourceDiagnostic = {
   expiresAt?: string
   peerConnectionState?: RTCPeerConnectionState
   iceConnectionState?: RTCIceConnectionState
+  receiverStats?: ReceiverPerformanceStats
 }
 
 export function shortDebugId(value: string | null | undefined) {
@@ -61,6 +63,19 @@ export function liveDebugRows(layers: SceneLayer[], leaseSourceIds: string[], st
       diagnostic?.expiresAt ? `expires=${diagnostic.expiresAt}` : '',
       diagnostic?.peerConnectionState ? `peer=${diagnostic.peerConnectionState}` : '',
       diagnostic?.iceConnectionState ? `ice=${diagnostic.iceConnectionState}` : '',
+      diagnostic?.receiverStats?.inboundMbps === undefined ? '' : `in=${compactMetric(diagnostic.receiverStats.inboundMbps)}Mbps`,
+      diagnostic?.receiverStats?.receiveFps === undefined ? '' : `recv=${compactMetric(diagnostic.receiverStats.receiveFps)}fps`,
+      diagnostic?.receiverStats?.packetsReceived === undefined ? '' : `packets=${diagnostic.receiverStats.packetsReceived}`,
+      diagnostic?.receiverStats?.packetsLost === undefined ? '' : `lost=${diagnostic.receiverStats.packetsLost}`,
+      diagnostic?.receiverStats?.framesReceived === undefined ? '' : `frames=${diagnostic.receiverStats.framesReceived}`,
+      diagnostic?.receiverStats?.framesDecoded === undefined ? '' : `decoded=${diagnostic.receiverStats.framesDecoded}`,
+      diagnostic?.receiverStats?.framesDropped === undefined ? '' : `dropped=${diagnostic.receiverStats.framesDropped}`,
+      diagnostic?.receiverStats?.totalDecodeTime === undefined ? '' : `decode=${compactMetric(diagnostic.receiverStats.totalDecodeTime, 2)}s`,
+      diagnostic?.receiverStats?.keyFramesDecoded === undefined ? '' : `keyframes=${diagnostic.receiverStats.keyFramesDecoded}`,
+      diagnostic?.receiverStats?.packetLossPercent === undefined ? '' : `loss=${compactMetric(diagnostic.receiverStats.packetLossPercent)}%`,
+      diagnostic?.receiverStats?.jitterMs === undefined ? '' : `jitter=${compactMetric(diagnostic.receiverStats.jitterMs)}ms`,
+      diagnostic?.receiverStats?.roundTripTimeMs === undefined ? '' : `rtt=${compactMetric(diagnostic.receiverStats.roundTripTimeMs)}ms`,
+      diagnostic?.receiverStats?.candidateType ? `ice=${diagnostic.receiverStats.candidateType}` : '',
     ].filter(Boolean).join(' · ')
     return { label: names.get(id) ?? `Source ${shortDebugId(id)}`, value: states[id] ?? (leaseSourceIds.includes(id) ? 'WAITING' : 'NO LEASE'), detail: detail || undefined }
   })

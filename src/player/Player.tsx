@@ -9,10 +9,11 @@ import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, 
 import { geometryDebugRows, liveDebugRows, mediaDebugRows, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState, type LiveSourceDiagnostic } from './playerDebug'
 import { preparePlaylistScene } from '../lib/playlistRuntime'
 import { liveSessionConnectionIdentity, liveSessionLeaseIsActive } from '../lib/liveSessionConnection'
+import { normalizeReceiverStats } from '../lib/livePerformanceStats'
 
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
 
-function PlayerLiveSession({ device, lease, disabled, onStream, onRemove, onStatus, onDiagnostic }: { device: { id: string; token: string }; lease: LiveSessionLease; disabled: boolean; onStream: (sourceId: string, stream: MediaStream) => void; onRemove: (sourceId: string) => void; onStatus: (sourceId: string, status: LiveDebugState) => void; onDiagnostic: (sourceId: string, update: LiveSourceDiagnostic) => void }) {
+function PlayerLiveSession({ device, lease, disabled, diagnosticsEnabled, onStream, onRemove, onStatus, onDiagnostic }: { device: { id: string; token: string }; lease: LiveSessionLease; disabled: boolean; diagnosticsEnabled: boolean; onStream: (sourceId: string, stream: MediaStream) => void; onRemove: (sourceId: string) => void; onStatus: (sourceId: string, status: LiveDebugState) => void; onDiagnostic: (sourceId: string, update: LiveSourceDiagnostic) => void }) {
   const socketRef = useRef<WebSocket | null>(null)
   const scopeRef = useRef<AuthenticatedMessage | null>(null)
   const peerRef = useRef<RTCPeerConnection | null>(null)
@@ -29,8 +30,11 @@ function PlayerLiveSession({ device, lease, disabled, onStream, onRemove, onStat
     let stopped = false
     let retries = 0
     let retryTimer = 0
+    let statsTimer = 0
+    let previousStats: ReturnType<typeof normalizeReceiverStats>['snapshot'] | undefined
     const report = (update: LiveSourceDiagnostic) => callbacksRef.current.onDiagnostic(liveSourceId, { sessionId, targetDeviceId, expiresAt: expiresAtRef.current, ...update })
-    const closePeer = () => { const peer = peerRef.current; peerRef.current = null; pendingRef.current.splice(0); if (peer) { peer.onicecandidate = null; peer.ontrack = null; peer.onconnectionstatechange = null; peer.oniceconnectionstatechange = null; peer.close(); report({ peerConnectionState: 'closed', iceConnectionState: 'closed' }) } }
+    const closePeer = () => { window.clearInterval(statsTimer); statsTimer = 0; previousStats = undefined; const peer = peerRef.current; peerRef.current = null; pendingRef.current.splice(0); if (peer) { peer.onicecandidate = null; peer.ontrack = null; peer.onconnectionstatechange = null; peer.oniceconnectionstatechange = null; peer.close(); report({ peerConnectionState: 'closed', iceConnectionState: 'closed' }) } }
+    const sampleStats = (peer: RTCPeerConnection) => { void peer.getStats().then(reportStats => { if (peer !== peerRef.current) return; const normalized = normalizeReceiverStats(reportStats, previousStats); previousStats = normalized.snapshot; report({ receiverStats: normalized.stats, peerConnectionState: peer.connectionState, iceConnectionState: peer.iceConnectionState }) }).catch(() => undefined) }
     const send = <T extends 'answer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'answer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) => {
       if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
     }
@@ -62,6 +66,7 @@ function PlayerLiveSession({ device, lease, disabled, onStream, onRemove, onStat
           peer.ontrack = event => { if (peer === peerRef.current && event.track.kind === 'video') { callbacksRef.current.onStream(scope.liveSourceId, event.streams[0] ?? new MediaStream([event.track])); callbacksRef.current.onStatus(liveSourceId, 'STREAMING') } }
           peer.onconnectionstatechange = () => { if (peer === peerRef.current) { report({ peerConnectionState: peer.connectionState }); if (peer.connectionState === 'failed' || peer.connectionState === 'closed') { callbacksRef.current.onStatus(liveSourceId, 'RECONNECTING'); closePeer(); if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(scopedClientMessage(scope, 'peer-ready', {}))) } } }
           peer.oniceconnectionstatechange = () => { if (peer === peerRef.current) report({ iceConnectionState: peer.iceConnectionState }) }
+          if (diagnosticsEnabled) { sampleStats(peer); statsTimer = window.setInterval(() => sampleStats(peer), 2000) }
           await peer.setRemoteDescription({ type: 'offer', sdp: message.payload.sdp }); await flushIceCandidates(peer, pendingRef.current)
           const answer = await peer.createAnswer(); if (peer !== peerRef.current) return; await peer.setLocalDescription(answer)
           if (peer.localDescription?.sdp) send(scope, 'answer', { sdp: peer.localDescription.sdp })
@@ -75,7 +80,7 @@ function PlayerLiveSession({ device, lease, disabled, onStream, onRemove, onStat
     }
     connect()
     return () => { stopped = true; window.clearTimeout(retryTimer); closePeer(); socketRef.current?.close(1000, 'lease-changed'); callbacksRef.current.onRemove(liveSourceId) }
-  }, [connectionIdentity, disabled])
+  }, [connectionIdentity, disabled, diagnosticsEnabled])
   return null
 }
 
@@ -402,7 +407,7 @@ export function Player() {
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <>{debugPanel}<main className="pairing"><form onSubmit={pair}><p className="eyebrow">SCREENMESH PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main></>
   if (safeMode) return <>{debugPanel}<main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>ScreenMesh player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main></>
-  const liveRuntimes = liveSessions.map(lease => <PlayerLiveSession key={lease.sessionId} device={device} lease={lease} disabled={safeMode || videosDisabled} onStream={registerLiveStream} onRemove={removeLiveStream} onStatus={debug ? setLiveSourceStatus : ignoreLiveSourceStatus} onDiagnostic={debug ? setLiveSourceDiagnostic : ignoreLiveSourceDiagnostic} />)
+  const liveRuntimes = liveSessions.map(lease => <PlayerLiveSession key={lease.sessionId} device={device} lease={lease} disabled={safeMode || videosDisabled} diagnosticsEnabled={debug} onStream={registerLiveStream} onRemove={removeLiveStream} onStatus={debug ? setLiveSourceStatus : ignoreLiveSourceStatus} onDiagnostic={debug ? setLiveSourceDiagnostic : ignoreLiveSourceDiagnostic} />)
   if (scene && v2Contract?.status === 'invalid') return <>{liveRuntimes}<main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
   return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
 }

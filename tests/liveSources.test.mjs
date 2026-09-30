@@ -40,7 +40,7 @@ test('player retains session-ended cleanup while excluding renewed expiry from c
   const player = await readFile(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
   assert.match(player, /expiresAtRef\.current = lease\.expiresAt/)
   assert.match(player, /liveSessionLeaseIsActive\(expiresAtRef\.current\)/)
-  assert.match(player, /\}, \[connectionIdentity, disabled\]\)/)
+  assert.match(player, /\}, \[connectionIdentity, disabled, diagnosticsEnabled\]\)/)
   assert.doesNotMatch(player, /lease\.expiresAt, disabled/)
   assert.match(player, /message\.type === 'session-ended'[\s\S]*onRemove\(liveSourceId\)[\s\S]*socket\.close\(\)/)
 })

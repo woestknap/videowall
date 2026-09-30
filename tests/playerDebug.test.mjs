@@ -30,7 +30,7 @@ test('IDs, missing values, and multiple live rows remain safe and distinct', () 
 })
 test('live-source diagnostics report close details without exposing sensitive signaling data', () => {
   const rows = liveDebugRows([{ ...v2.layers[0], content: { liveSourceId: 'camera-source-id', liveSourceName: 'Camera A' } }], ['camera-source-id'], { 'camera-source-id': 'RECONNECTING' }, new Map(), {
-    'camera-source-id': { socketState: 'CLOSED', closeCode: 1008, closeReason: 'replaced', closeWasClean: true, socketError: true, sessionId: 'session-123456789', generation: 2, targetDeviceId: 'target-123456789', expiresAt: '2026-09-29T12:00:00.000Z', peerConnectionState: 'failed', iceConnectionState: 'disconnected', deviceToken: 'secret-token', sdp: 'secret-sdp', candidate: 'secret-candidate' },
+    'camera-source-id': { socketState: 'CLOSED', closeCode: 1008, closeReason: 'replaced', closeWasClean: true, socketError: true, sessionId: 'session-123456789', generation: 2, targetDeviceId: 'target-123456789', expiresAt: '2026-09-29T12:00:00.000Z', peerConnectionState: 'failed', iceConnectionState: 'disconnected', receiverStats: { inboundMbps: 2.4, receiveFps: 30, framesDecoded: 29, framesDropped: 2, packetLossPercent: .2, jitterMs: 14, roundTripTimeMs: 23, candidateType: 'host' }, deviceToken: 'secret-token', sdp: 'secret-sdp', candidate: 'secret-candidate' },
   })
   const detail = rows[0].detail ?? ''
   assert.match(detail, /ws=CLOSED/)
@@ -42,6 +42,7 @@ test('live-source diagnostics report close details without exposing sensitive si
   assert.match(detail, /expires=2026-09-29T12:00:00.000Z/)
   assert.match(detail, /peer=failed/)
   assert.match(detail, /ice=disconnected/)
+  assert.match(detail, /in=2.4Mbps.*recv=30.0fps.*loss=0.2%.*jitter=14.0ms.*rtt=23.0ms/)
   assert.doesNotMatch(detail, /secret-token|secret-sdp|secret-candidate/)
 })
 test('media states remain compact and debug-disabled player rendering does not subscribe to them', () => {
