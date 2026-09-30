@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { geometryDebugRows, liveDebugRows, mediaDebugRows, playerHealthSummary, playlistDebugRows, shortDebugId } from '../src/player/playerDebug.ts'
+import { geometryDebugRows, liveDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId } from '../src/player/playerDebug.ts'
 
 const v1 = { id: 'scene', name: 'Legacy', layers: [], duration_seconds: 1 }
 const v2 = { ...v1, geometry_version: 2, canvas_width_px: 3362, canvas_height_px: 1831, wall_geometry_revision: 'current', layers: [{ id: 'live-layer', type: 'live', target: [], x: 0, y: 0, width: 1, height: 1, zIndex: 1, content: { liveSourceId: 'camera-a', liveSourceName: 'Camera A' } }] }
@@ -30,12 +30,11 @@ test('IDs, missing values, and multiple live rows remain safe and distinct', () 
 })
 test('live-source diagnostics report close details without exposing sensitive signaling data', () => {
   const rows = liveDebugRows([{ ...v2.layers[0], content: { liveSourceId: 'camera-source-id', liveSourceName: 'Camera A' } }], ['camera-source-id'], { 'camera-source-id': 'RECONNECTING' }, new Map(), {
-    'camera-source-id': { socketState: 'CLOSED', closeCode: 1008, closeReason: 'replaced', closeWasClean: true, socketError: true, sessionId: 'session-123456789', generation: 2, targetDeviceId: 'target-123456789', expiresAt: '2026-09-29T12:00:00.000Z', peerConnectionState: 'failed', iceConnectionState: 'disconnected', receiverStats: { inboundMbps: 2.4, receiveFps: 30, framesDecoded: 29, framesDropped: 2, packetLossPercent: .2, jitterMs: 14, roundTripTimeMs: 23, candidateType: 'host' }, deviceToken: 'secret-token', sdp: 'secret-sdp', candidate: 'secret-candidate' },
+    'camera-source-id': { socketState: 'OPEN', lastCloseCode: 1008, lastCloseReason: 'replaced', lastCloseWasClean: true, lastCloseAtMs: Date.now() - 8_000, socketError: false, sessionId: 'session-123456789', generation: 2, targetDeviceId: 'target-123456789', expiresAt: '2026-09-29T12:00:00.000Z', peerConnectionState: 'failed', iceConnectionState: 'disconnected', receiverStats: { inboundMbps: 2.4, receiveFps: 30, framesDecoded: 29, framesDropped: 2, packetLossPercent: .2, jitterMs: 14, roundTripTimeMs: 23, candidateType: 'host', inboundVideoStatsAvailable: false, statsEntries: 12, videoReceivers: 1 }, deviceToken: 'secret-token', sdp: 'secret-sdp', candidate: 'secret-candidate' },
   })
   const detail = rows[0].detail ?? ''
-  assert.match(detail, /ws=CLOSED/)
-  assert.match(detail, /close=1008 clean \(replaced\)/)
-  assert.match(detail, /ws-error/)
+  assert.match(detail, /ws=OPEN/)
+  assert.match(detail, /last-close=1008 clean \(replaced\) [0-9]+s ago/)
   assert.match(detail, /session=session-/)
   assert.match(detail, /generation=2/)
   assert.match(detail, /target=target-1/)
@@ -43,7 +42,17 @@ test('live-source diagnostics report close details without exposing sensitive si
   assert.match(detail, /peer=failed/)
   assert.match(detail, /ice=disconnected/)
   assert.match(detail, /in=2.4Mbps.*recv=30.0fps.*loss=0.2%.*jitter=14.0ms.*rtt=23.0ms/)
+  assert.match(detail, /receiver-stats=unavailable.*stats-entries=12.*video-receivers=1/)
   assert.doesNotMatch(detail, /secret-token|secret-sdp|secret-candidate/)
+})
+test('recovered sockets retain close history until a genuinely new session starts', () => {
+  const closed = { sessionId: 'session-a', lastCloseCode: 1006, lastCloseReason: '', lastCloseWasClean: false, lastCloseAtMs: 100 }
+  const recovered = mergeLiveSourceDiagnostic(closed, { sessionId: 'session-a', socketState: 'OPEN', socketError: false })
+  assert.equal(recovered.lastCloseCode, 1006)
+  assert.equal(recovered.socketState, 'OPEN')
+  const replacement = mergeLiveSourceDiagnostic(recovered, { sessionId: 'session-b', socketState: 'CONNECTING' })
+  assert.equal(replacement.lastCloseCode, undefined)
+  assert.equal(replacement.socketState, 'CONNECTING')
 })
 test('media states remain compact and debug-disabled player rendering does not subscribe to them', () => {
   assert.equal(mediaDebugRows([{ ...v2.layers[0], id: 'video', type: 'video' }], { video: 'PLAYING' }).find(row => row.label === 'Video video')?.value, 'PLAYING')

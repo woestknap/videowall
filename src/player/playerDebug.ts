@@ -7,10 +7,11 @@ export type DebugRow = { label: string; value: string; detail?: string }
 export type LiveDebugState = 'WAITING' | 'CONNECTING' | 'CONNECTED' | 'NEGOTIATING' | 'STREAMING' | 'RECONNECTING' | 'ENDED' | 'ERROR'
 export type LiveSourceDiagnostic = {
   socketState?: 'CONNECTING' | 'OPEN' | 'CLOSED'
-  closeCode?: number
-  closeReason?: string
-  closeWasClean?: boolean
   socketError?: boolean
+  lastCloseCode?: number
+  lastCloseReason?: string
+  lastCloseWasClean?: boolean
+  lastCloseAtMs?: number
   sessionId?: string
   generation?: number
   targetDeviceId?: string
@@ -18,6 +19,18 @@ export type LiveSourceDiagnostic = {
   peerConnectionState?: RTCPeerConnectionState
   iceConnectionState?: RTCIceConnectionState
   receiverStats?: ReceiverPerformanceStats
+}
+
+export function mergeLiveSourceDiagnostic(previous: LiveSourceDiagnostic | undefined, update: LiveSourceDiagnostic): LiveSourceDiagnostic {
+  return previous?.sessionId && update.sessionId && previous.sessionId !== update.sessionId ? update : { ...previous, ...update }
+}
+
+function lastCloseDetail(diagnostic: LiveSourceDiagnostic | undefined, now = Date.now()) {
+  if (diagnostic?.lastCloseCode === undefined) return ''
+  const cleanliness = diagnostic.lastCloseWasClean === undefined ? '' : diagnostic.lastCloseWasClean ? ' clean' : ' unclean'
+  const reason = diagnostic.lastCloseReason ? ` (${diagnostic.lastCloseReason})` : ''
+  const age = diagnostic.lastCloseAtMs === undefined ? '' : ` ${Math.max(0, Math.floor((now - diagnostic.lastCloseAtMs) / 1000))}s ago`
+  return `last-close=${diagnostic.lastCloseCode}${cleanliness}${reason}${age}`
 }
 
 export function shortDebugId(value: string | null | undefined) {
@@ -54,7 +67,7 @@ export function liveDebugRows(layers: SceneLayer[], leaseSourceIds: string[], st
     const detail = [
       streams.has(id) ? 'video track present' : '',
       diagnostic?.socketState ? `ws=${diagnostic.socketState}` : '',
-      diagnostic?.closeCode === undefined ? '' : `close=${diagnostic.closeCode}${diagnostic.closeWasClean === undefined ? '' : diagnostic.closeWasClean ? ' clean' : ' unclean'}${diagnostic.closeReason ? ` (${diagnostic.closeReason})` : ''}`,
+      lastCloseDetail(diagnostic),
       diagnostic?.socketError ? 'ws-error' : '',
       diagnostic?.sessionId ? `session=${shortDebugId(diagnostic.sessionId)}` : '',
       diagnostic?.generation === undefined ? '' : `generation=${diagnostic.generation}`,
@@ -76,6 +89,10 @@ export function liveDebugRows(layers: SceneLayer[], leaseSourceIds: string[], st
       diagnostic?.receiverStats?.jitterMs === undefined ? '' : `jitter=${compactMetric(diagnostic.receiverStats.jitterMs)}ms`,
       diagnostic?.receiverStats?.roundTripTimeMs === undefined ? '' : `rtt=${compactMetric(diagnostic.receiverStats.roundTripTimeMs)}ms`,
       diagnostic?.receiverStats?.candidateType ? `ice=${diagnostic.receiverStats.candidateType}` : '',
+      diagnostic?.receiverStats?.presentationFps === undefined ? '' : `presented=${compactMetric(diagnostic.receiverStats.presentationFps)}fps`,
+      diagnostic?.receiverStats?.inboundVideoStatsAvailable === false ? 'receiver-stats=unavailable' : '',
+      diagnostic?.receiverStats?.statsEntries === undefined ? '' : `stats-entries=${diagnostic.receiverStats.statsEntries}`,
+      diagnostic?.receiverStats?.videoReceivers === undefined ? '' : `video-receivers=${diagnostic.receiverStats.videoReceivers}`,
     ].filter(Boolean).join(' · ')
     return { label: names.get(id) ?? `Source ${shortDebugId(id)}`, value: states[id] ?? (leaseSourceIds.includes(id) ? 'WAITING' : 'NO LEASE'), detail: detail || undefined }
   })

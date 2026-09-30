@@ -38,3 +38,17 @@ test('missing, reset, and incomplete browser stats remain safe', () => {
   assert.equal(reset.stats.inboundMbps, undefined)
   assert.equal(reset.stats.packetLossPercent, undefined)
 })
+
+test('receiver-report fallback recognizes Chromium video stats without a media kind and exposes availability', () => {
+  const peerReport = [{ id: 'pair', type: 'candidate-pair', selected: true, localCandidateId: 'local', currentRoundTripTime: .02 }, { id: 'local', type: 'local-candidate', candidateType: 'host', address: '192.168.1.44' }]
+  const receiverReport = [{ id: 'inbound', type: 'inbound-rtp', bytesReceived: 1_000, framesReceived: 10, framesDecoded: 9, packetsReceived: 10, packetsLost: 0 }]
+  const normalized = normalizeReceiverStats([...peerReport, ...receiverReport], undefined, 1_000, { receiverReport, statsEntries: 3, videoReceivers: 1 })
+  assert.equal(normalized.stats.inboundVideoStatsAvailable, true)
+  assert.equal(normalized.stats.framesDecoded, 9)
+  assert.equal(normalized.stats.statsEntries, 3)
+  assert.equal(normalized.stats.videoReceivers, 1)
+  const unavailable = normalizeReceiverStats(peerReport, undefined, 1_000, { statsEntries: 2, videoReceivers: 1 })
+  assert.equal(unavailable.stats.inboundVideoStatsAvailable, false)
+  assert.equal(unavailable.stats.statsEntries, 2)
+  assert.doesNotMatch(JSON.stringify(normalized.stats), /192\.168|address/)
+})

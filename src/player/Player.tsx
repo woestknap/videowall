@@ -6,10 +6,10 @@ import { parseServerSignalingMessage, scopedClientMessage, SIGNALING_VERSION, ty
 import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type PendingIceCandidate } from '../lib/webrtc'
 import { recoveryDelayMs } from '../lib/recovery'
 import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, type VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
-import { geometryDebugRows, liveDebugRows, mediaDebugRows, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState, type LiveSourceDiagnostic } from './playerDebug'
+import { geometryDebugRows, liveDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState, type LiveSourceDiagnostic } from './playerDebug'
 import { preparePlaylistScene } from '../lib/playlistRuntime'
 import { liveSessionConnectionIdentity, liveSessionLeaseIsActive } from '../lib/liveSessionConnection'
-import { normalizeReceiverStats } from '../lib/livePerformanceStats'
+import { mergeStatsReports, normalizeReceiverStats } from '../lib/livePerformanceStats'
 
 const WEBRTC_DISCONNECT_GRACE_MS = 5000
 
@@ -34,7 +34,15 @@ function PlayerLiveSession({ device, lease, disabled, diagnosticsEnabled, onStre
     let previousStats: ReturnType<typeof normalizeReceiverStats>['snapshot'] | undefined
     const report = (update: LiveSourceDiagnostic) => callbacksRef.current.onDiagnostic(liveSourceId, { sessionId, targetDeviceId, expiresAt: expiresAtRef.current, ...update })
     const closePeer = () => { window.clearInterval(statsTimer); statsTimer = 0; previousStats = undefined; const peer = peerRef.current; peerRef.current = null; pendingRef.current.splice(0); if (peer) { peer.onicecandidate = null; peer.ontrack = null; peer.onconnectionstatechange = null; peer.oniceconnectionstatechange = null; peer.close(); report({ peerConnectionState: 'closed', iceConnectionState: 'closed' }) } }
-    const sampleStats = (peer: RTCPeerConnection) => { void peer.getStats().then(reportStats => { if (peer !== peerRef.current) return; const normalized = normalizeReceiverStats(reportStats, previousStats); previousStats = normalized.snapshot; report({ receiverStats: normalized.stats, peerConnectionState: peer.connectionState, iceConnectionState: peer.iceConnectionState }) }).catch(() => undefined) }
+    const sampleStats = (peer: RTCPeerConnection) => {
+      const videoReceivers = peer.getReceivers().filter(receiver => receiver.track?.kind === 'video')
+      void Promise.all([peer.getStats(), ...videoReceivers.map(receiver => receiver.getStats())]).then(reports => {
+        if (peer !== peerRef.current) return
+        const normalized = normalizeReceiverStats(mergeStatsReports(reports), previousStats, Date.now(), { receiverReport: mergeStatsReports(reports.slice(1)), statsEntries: mergeStatsReports(reports).length, videoReceivers: videoReceivers.length })
+        previousStats = normalized.snapshot
+        report({ receiverStats: normalized.stats, peerConnectionState: peer.connectionState, iceConnectionState: peer.iceConnectionState })
+      }).catch(() => undefined)
+    }
     const send = <T extends 'answer' | 'ice-candidate'>(scope: AuthenticatedMessage, type: T, payload: T extends 'answer' ? { sdp: string } : { candidate: string | null; sdpMid: string | null; sdpMLineIndex: number | null }) => {
       if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(scopedClientMessage(scope, type, payload)))
     }
@@ -42,7 +50,7 @@ function PlayerLiveSession({ device, lease, disabled, diagnosticsEnabled, onStre
     function connect() {
       if (stopped) return
       callbacksRef.current.onStatus(liveSourceId, 'CONNECTING')
-      report({ socketState: 'CONNECTING', socketError: false, closeCode: undefined, closeReason: undefined, closeWasClean: undefined })
+      report({ socketState: 'CONNECTING', socketError: false })
       let socket: WebSocket
       try { socket = new WebSocket(signalingUrl) } catch { callbacksRef.current.onStatus(liveSourceId, 'ERROR'); retry(); return }
       socketRef.current = socket
@@ -76,7 +84,7 @@ function PlayerLiveSession({ device, lease, disabled, diagnosticsEnabled, onStre
         } else if (message.type === 'session-ended') { callbacksRef.current.onStatus(liveSourceId, 'ENDED'); closePeer(); callbacksRef.current.onRemove(liveSourceId); socket.close() }
       })() })
       socket.addEventListener('error', () => report({ socketError: true }))
-      socket.addEventListener('close', event => { report({ socketState: 'CLOSED', closeCode: event.code, closeReason: event.reason, closeWasClean: event.wasClean }); if (!stopped && socketRef.current === socket) { socketRef.current = null; retry() } })
+      socket.addEventListener('close', event => { report({ socketState: 'CLOSED', lastCloseCode: event.code, lastCloseReason: event.reason, lastCloseWasClean: event.wasClean, lastCloseAtMs: Date.now() }); if (!stopped && socketRef.current === socket) { socketRef.current = null; retry() } })
     }
     connect()
     return () => { stopped = true; window.clearTimeout(retryTimer); closePeer(); socketRef.current?.close(1000, 'lease-changed'); callbacksRef.current.onRemove(liveSourceId) }
@@ -140,7 +148,10 @@ export function Player() {
   const registerLiveStream = useCallback((liveSourceId: string, stream: MediaStream) => setLiveStreams(current => new Map(current).set(liveSourceId, stream)), [])
   const removeLiveStream = useCallback((liveSourceId: string) => setLiveStreams(current => { current.get(liveSourceId)?.getTracks().forEach(track => track.stop()); const next = new Map(current); next.delete(liveSourceId); return next }), [])
   const setLiveSourceStatus = useCallback((liveSourceId: string, nextStatus: LiveDebugState) => setLiveSourceStates(current => current[liveSourceId] === nextStatus ? current : { ...current, [liveSourceId]: nextStatus }), [])
-  const setLiveSourceDiagnostic = useCallback((liveSourceId: string, update: LiveSourceDiagnostic) => setLiveSourceDiagnostics(current => ({ ...current, [liveSourceId]: { ...current[liveSourceId], ...update } })), [])
+  const setLiveSourceDiagnostic = useCallback((liveSourceId: string, update: LiveSourceDiagnostic) => setLiveSourceDiagnostics(current => {
+    return { ...current, [liveSourceId]: mergeLiveSourceDiagnostic(current[liveSourceId], update) }
+  }), [])
+  const setLivePresentationFps = useCallback((liveSourceId: string, presentationFps: number) => setLiveSourceDiagnostics(current => ({ ...current, [liveSourceId]: { ...current[liveSourceId], receiverStats: { ...current[liveSourceId]?.receiverStats, presentationFps } } })), [])
   const setMediaStatus = useCallback((layerId: string, nextStatus: string) => setMediaStates(current => current[layerId] === nextStatus ? current : { ...current, [layerId]: nextStatus }), [])
   const ignoreLiveSourceStatus = useCallback((_liveSourceId: string, _nextStatus: LiveDebugState) => undefined, [])
   const ignoreLiveSourceDiagnostic = useCallback((_liveSourceId: string, _update: LiveSourceDiagnostic) => undefined, [])
@@ -409,5 +420,5 @@ export function Player() {
   if (safeMode) return <>{debugPanel}<main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>ScreenMesh player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main></>
   const liveRuntimes = liveSessions.map(lease => <PlayerLiveSession key={lease.sessionId} device={device} lease={lease} disabled={safeMode || videosDisabled} diagnosticsEnabled={debug} onStream={registerLiveStream} onRemove={removeLiveStream} onStatus={debug ? setLiveSourceStatus : ignoreLiveSourceStatus} onDiagnostic={debug ? setLiveSourceDiagnostic : ignoreLiveSourceDiagnostic} />)
   if (scene && v2Contract?.status === 'invalid') return <>{liveRuntimes}<main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
-  return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
+  return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} onLivePresentationFps={debug ? setLivePresentationFps : undefined} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
 }

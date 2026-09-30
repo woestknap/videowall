@@ -1,6 +1,7 @@
 export type CaptureSettings = { width?: number; height?: number; frameRate?: number; deviceId?: string }
 export type SenderPerformanceStats = { outboundMbps?: number; encodedFps?: number; bytesSent?: number; packetsSent?: number; framesEncoded?: number; framesSent?: number; framesPerSecond?: number; totalEncodeTime?: number; qualityLimitationReason?: string; qualityLimitationDurations?: Record<string, number>; retransmittedPacketsSent?: number; retransmittedBytesSent?: number; targetBitrate?: number; availableOutgoingBitrate?: number; roundTripTimeMs?: number; candidateType?: string }
-export type ReceiverPerformanceStats = { inboundMbps?: number; receiveFps?: number; bytesReceived?: number; packetsReceived?: number; packetsLost?: number; packetLossPercent?: number; jitterMs?: number; framesReceived?: number; framesDecoded?: number; framesDropped?: number; framesPerSecond?: number; totalDecodeTime?: number; keyFramesDecoded?: number; roundTripTimeMs?: number; candidateType?: string }
+export type ReceiverPerformanceStats = { inboundMbps?: number; receiveFps?: number; bytesReceived?: number; packetsReceived?: number; packetsLost?: number; packetLossPercent?: number; jitterMs?: number; framesReceived?: number; framesDecoded?: number; framesDropped?: number; framesPerSecond?: number; totalDecodeTime?: number; keyFramesDecoded?: number; roundTripTimeMs?: number; candidateType?: string; statsEntries?: number; videoReceivers?: number; inboundVideoStatsAvailable?: boolean; presentationFps?: number }
+export type ReceiverStatsContext = { receiverReport?: Iterable<unknown>; statsEntries?: number; videoReceivers?: number }
 type Snapshot = { at: number; bytes?: number; frames?: number; packetsReceived?: number; packetsLost?: number }
 type Stat = Record<string, unknown>
 
@@ -15,6 +16,7 @@ const selectedPair = (items: Stat[]) => {
 }
 const candidateType = (items: Stat[], pair: Stat | undefined) => text(items.find(item => item.type === 'local-candidate' && item.id === pair?.localCandidateId)?.candidateType)
 const transport = (items: Stat[]) => { const pair = selectedPair(items); return { pair, candidateType: candidateType(items, pair), roundTripTimeMs: number(pair?.currentRoundTripTime) === undefined ? undefined : number(pair?.currentRoundTripTime)! * 1000, availableOutgoingBitrate: number(pair?.availableOutgoingBitrate) } }
+export const mergeStatsReports = (reports: Iterable<Iterable<unknown>>) => [...reports].flatMap(report => [...report])
 
 export function captureSettings(track: MediaStreamTrack): CaptureSettings { const settings = track.getSettings(); return { width: settings.width, height: settings.height, frameRate: settings.frameRate, deviceId: settings.deviceId } }
 export function normalizeSenderStats(report: Iterable<unknown>, previous?: Snapshot, at = Date.now()) {
@@ -27,10 +29,10 @@ export function normalizeSenderStats(report: Iterable<unknown>, previous?: Snaps
   return { stats, snapshot: { at, bytes: bytesSent, frames: framesEncoded } satisfies Snapshot }
 }
 
-export function normalizeReceiverStats(report: Iterable<unknown>, previous?: Snapshot, at = Date.now()) {
-  const items = entries(report); const stat = items.find(item => video(item, 'inbound-rtp')); const network = transport(items); if (!stat) return { stats: { candidateType: network.candidateType, roundTripTimeMs: network.roundTripTimeMs } satisfies ReceiverPerformanceStats, snapshot: { at } satisfies Snapshot }
+export function normalizeReceiverStats(report: Iterable<unknown>, previous?: Snapshot, at = Date.now(), context: ReceiverStatsContext = {}) {
+  const items = entries(report); const receiverItems = context.receiverReport ? entries(context.receiverReport) : []; const stat = receiverItems.find(item => video(item, 'inbound-rtp')) ?? receiverItems.find(item => item.type === 'inbound-rtp') ?? items.find(item => video(item, 'inbound-rtp')); const network = transport(items); if (!stat) return { stats: { candidateType: network.candidateType, roundTripTimeMs: network.roundTripTimeMs, statsEntries: context.statsEntries ?? items.length, videoReceivers: context.videoReceivers, inboundVideoStatsAvailable: false } satisfies ReceiverPerformanceStats, snapshot: { at } satisfies Snapshot }
   const bytesReceived = number(stat.bytesReceived); const framesReceived = number(stat.framesReceived); const packetsReceived = number(stat.packetsReceived); const packetsLost = number(stat.packetsLost); const elapsed = at - (previous?.at ?? at)
-  const stats: ReceiverPerformanceStats = { bytesReceived, packetsReceived, packetsLost, jitterMs: number(stat.jitter) === undefined ? undefined : number(stat.jitter)! * 1000, framesReceived, framesDecoded: number(stat.framesDecoded), framesDropped: number(stat.framesDropped), framesPerSecond: number(stat.framesPerSecond), totalDecodeTime: number(stat.totalDecodeTime), keyFramesDecoded: number(stat.keyFramesDecoded), roundTripTimeMs: network.roundTripTimeMs, candidateType: network.candidateType }
+  const stats: ReceiverPerformanceStats = { bytesReceived, packetsReceived, packetsLost, jitterMs: number(stat.jitter) === undefined ? undefined : number(stat.jitter)! * 1000, framesReceived, framesDecoded: number(stat.framesDecoded), framesDropped: number(stat.framesDropped), framesPerSecond: number(stat.framesPerSecond), totalDecodeTime: number(stat.totalDecodeTime), keyFramesDecoded: number(stat.keyFramesDecoded), roundTripTimeMs: network.roundTripTimeMs, candidateType: network.candidateType, statsEntries: context.statsEntries ?? items.length, videoReceivers: context.videoReceivers, inboundVideoStatsAvailable: true }
   const bytesPerMs = rate(bytesReceived, previous?.bytes, elapsed); const framesPerMs = rate(framesReceived, previous?.frames, elapsed)
   if (bytesPerMs !== undefined) stats.inboundMbps = bytesPerMs * 8 / 1000
   if (framesPerMs !== undefined) stats.receiveFps = framesPerMs * 1000
