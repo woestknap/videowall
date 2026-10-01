@@ -62,11 +62,15 @@ test('media states remain compact and debug-disabled player rendering does not s
 })
 test('playlist diagnostics expose display, loader, and activation state without secrets', () => {
   const runtime = { playlist_name: 'Morning', status: 'PLAYING', phase: 'PREPARING', generation: '123456789012', sequence: 4, current_index: 0, item_count: 5, target_scene_id: 'target-scene', target_scene_name: 'Promo', loading_scene_id: 'loading-scene', loading_at: new Date(Date.now() + 600).toISOString(), activation_at: null, ready_count: 4, expected_count: 5, transition_deadline_at: new Date(Date.now() + 5000).toISOString(), failed_device_ids: [], degraded: false }
-  const rows = playlistDebugRows(runtime)
+  const rows = playlistDebugRows(runtime, Date.now(), { loaderSkewMs: 23, activationSkewMs: -8, clockRoundTripMs: 17.4, pollRoundTripMs: 42.2 })
   assert.equal(rows.find(row => row.label === 'Playlist')?.value, 'Morning')
   assert.equal(rows.find(row => row.label === 'Ready')?.value, '4 / 5')
   assert.equal(rows.find(row => row.label === 'Generation')?.value, '12345678…')
   assert.match(rows.find(row => row.label === 'Loader')?.value ?? '', /^IN 00:0[01]\.[0-9]$/)
+  assert.equal(rows.find(row => row.label === 'Loader skew')?.value, '+23 ms')
+  assert.equal(rows.find(row => row.label === 'Activation skew')?.value, '-8 ms')
+  assert.equal(rows.find(row => row.label === 'Clock RTT')?.value, '17 ms')
+  assert.equal(rows.find(row => row.label === 'Poll RTT')?.value, '42 ms')
   assert.equal(rows.some(row => row.label.toLowerCase().includes('token')), false)
   const armedRows = playlistDebugRows({ ...runtime, phase: 'ARMED', activation_at: new Date(Date.now() + 1200).toISOString() })
   assert.equal(armedRows.find(row => row.label === 'Phase')?.value, 'ARMED')

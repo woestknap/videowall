@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { isConfigured, supabase } from '../lib/supabase'
 import type { Device, PlaylistRuntime, Scene, SceneLayer } from '../types'
 import { ScenePreview, type ScenePreviewProps } from '../rendering/ScenePreview'
@@ -7,7 +7,7 @@ import { addOrQueueIceCandidate, flushIceCandidates, webRtcConfiguration, type P
 import { recoveryDelayMs } from '../lib/recovery'
 import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, type VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { geometryDebugRows, liveDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState, type LiveSourceDiagnostic } from './playerDebug'
-import { playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, preparePlaylistScene, type PlaylistLoadingOverlayState } from '../lib/playlistRuntime'
+import { playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, playlistPresentationSkewMs, preparePlaylistScene, type PlaylistLoadingOverlayState, type PlaylistTimingDiagnostics } from '../lib/playlistRuntime'
 import { liveSessionConnectionIdentity, liveSessionLeaseIsActive } from '../lib/liveSessionConnection'
 import { mergeStatsReports, normalizeReceiverStats } from '../lib/livePerformanceStats'
 
@@ -96,12 +96,13 @@ function DebugSection({ title, rows }: { title: string; rows: DebugRow[] }) {
   return <section><strong>{title}</strong>{rows.map(row => <div className="player-debug-row" key={`${title}:${row.label}`}><span>{row.label}</span><b>{row.value}</b>{row.detail && <small>{row.detail}</small>}</div>)}</section>
 }
 
-function PlayerDebugOverlay({ device, deviceName, wallId, scene, playlistRuntime, status, geometryRows, signalingStatus, liveRows, mediaRows, health, webRtcConnectionState, iceConnectionState }: { device: { id: string } | null; deviceName: string | null; wallId: string | null; scene: Scene | null; playlistRuntime: PlaylistRuntime | null; status: string; geometryRows: DebugRow[]; signalingStatus: string; liveRows: DebugRow[]; mediaRows: DebugRow[]; health: string; webRtcConnectionState: string; iceConnectionState: string }) {
-  return <aside className="player-debug" aria-label="ScreenMesh player diagnostics"><header><strong>SCREENMESH PLAYER</strong><b>{health}</b></header><DebugSection title="Device" rows={[{ label: 'Status', value: device ? 'PAIRED' : 'UNPAIRED' }, { label: 'Name', value: deviceName ?? 'Unknown device' }, { label: 'ID', value: shortDebugId(device?.id) }, { label: 'Wall', value: wallId ? shortDebugId(wallId) : 'No wall' }, { label: 'Scene', value: scene ? `${scene.name} (${shortDebugId(scene.id)})` : 'No active scene' }, { label: 'Polling', value: status }]} /><DebugSection title="Geometry" rows={geometryRows} /><DebugSection title="Playlist" rows={playlistDebugRows(playlistRuntime)} /><DebugSection title="Legacy runtime" rows={[{ label: 'Signaling', value: signalingStatus.toUpperCase() }, { label: 'WebRTC', value: webRtcConnectionState.toUpperCase() }, { label: 'ICE', value: iceConnectionState.toUpperCase() }]} /><DebugSection title="Live sources" rows={liveRows.length ? liveRows : [{ label: 'Sources', value: 'None' }]} /><DebugSection title="Media" rows={mediaRows} /></aside>
+function PlayerDebugOverlay({ device, deviceName, wallId, scene, playlistRuntime, playlistTiming, status, geometryRows, signalingStatus, liveRows, mediaRows, health, webRtcConnectionState, iceConnectionState }: { device: { id: string } | null; deviceName: string | null; wallId: string | null; scene: Scene | null; playlistRuntime: PlaylistRuntime | null; playlistTiming: PlaylistTimingDiagnostics; status: string; geometryRows: DebugRow[]; signalingStatus: string; liveRows: DebugRow[]; mediaRows: DebugRow[]; health: string; webRtcConnectionState: string; iceConnectionState: string }) {
+  return <aside className="player-debug" aria-label="ScreenMesh player diagnostics"><header><strong>SCREENMESH PLAYER</strong><b>{health}</b></header><DebugSection title="Device" rows={[{ label: 'Status', value: device ? 'PAIRED' : 'UNPAIRED' }, { label: 'Name', value: deviceName ?? 'Unknown device' }, { label: 'ID', value: shortDebugId(device?.id) }, { label: 'Wall', value: wallId ? shortDebugId(wallId) : 'No wall' }, { label: 'Scene', value: scene ? `${scene.name} (${shortDebugId(scene.id)})` : 'No active scene' }, { label: 'Polling', value: status }]} /><DebugSection title="Geometry" rows={geometryRows} /><DebugSection title="Playlist" rows={playlistDebugRows(playlistRuntime, Date.now(), playlistTiming)} /><DebugSection title="Legacy runtime" rows={[{ label: 'Signaling', value: signalingStatus.toUpperCase() }, { label: 'WebRTC', value: webRtcConnectionState.toUpperCase() }, { label: 'ICE', value: iceConnectionState.toUpperCase() }]} /><DebugSection title="Live sources" rows={liveRows.length ? liveRows : [{ label: 'Sources', value: 'None' }]} /><DebugSection title="Media" rows={mediaRows} /></aside>
 }
 
-function PlaylistLoadingOverlay({ runtime, scene, serverEpochOffsetMs, ...props }: { runtime: PlaylistRuntime | null; scene: Scene | null; serverEpochOffsetMs: number } & Omit<ScenePreviewProps, 'scene' | 'player' | 'serverEpochOffsetMs'>) {
+function PlaylistLoadingOverlay({ runtime, scene, serverEpochOffsetMs, onLoaderFadeStart, ...props }: { runtime: PlaylistRuntime | null; scene: Scene | null; serverEpochOffsetMs: number; onLoaderFadeStart?: (actualServerNowMs: number, intendedServerAtMs: number) => void } & Omit<ScenePreviewProps, 'scene' | 'player' | 'serverEpochOffsetMs'>) {
   const [presentation, setPresentation] = useState<PlaylistLoadingOverlayState>(() => playlistLoadingOverlayState(runtime, performance.now() + serverEpochOffsetMs))
+  const reportedFadeStartRef = useRef('')
   useEffect(() => {
     let frame = 0, timer = 0, stopped = false
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -115,7 +116,14 @@ function PlaylistLoadingOverlay({ runtime, scene, serverEpochOffsetMs, ...props 
     }
     update()
     return () => { stopped = true; cancelAnimationFrame(frame); window.clearTimeout(timer) }
-  }, [runtime?.generation, runtime?.sequence, runtime?.phase, runtime?.status, runtime?.loading_at, runtime?.activation_at, serverEpochOffsetMs])
+  }, [runtime?.generation, runtime?.sequence, runtime?.phase, runtime?.status, runtime?.loading_at, runtime?.activation_at, serverEpochOffsetMs, scene?.id, onLoaderFadeStart])
+  useLayoutEffect(() => {
+    const loadingAt = runtime?.loading_at ? Date.parse(runtime.loading_at) : NaN
+    const timingKey = `${runtime?.generation ?? ''}:${runtime?.sequence ?? ''}:${runtime?.loading_at ?? ''}`
+    if (!scene || !presentation.mounted || presentation.phase === 'WAITING' || !Number.isFinite(loadingAt) || reportedFadeStartRef.current === timingKey) return
+    reportedFadeStartRef.current = timingKey
+    onLoaderFadeStart?.(performance.now() + serverEpochOffsetMs, loadingAt)
+  }, [presentation.mounted, presentation.phase, runtime?.generation, runtime?.sequence, runtime?.loading_at, scene?.id, serverEpochOffsetMs, onLoaderFadeStart])
   if (!scene || !presentation.mounted) return null
   const mutedScene = { ...scene, layers: scene.layers.map(layer => layer.type === 'video' ? { ...layer, content: { ...layer.content, muted: true } } : layer) }
   return <div className="playlist-loading-overlay" data-overlay-phase={presentation.phase} style={{ opacity: presentation.opacity }} aria-hidden="true"><ScenePreview {...props} scene={mutedScene} player serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={runtime?.loading_at ? Date.parse(runtime.loading_at) : 0} /></div>
@@ -149,6 +157,9 @@ export function Player() {
   const [playlistRuntime, setPlaylistRuntime] = useState<PlaylistRuntime | null>(null)
   const [playlistTargetScene, setPlaylistTargetScene] = useState<Scene | null>(null)
   const [playlistLoadingScene, setPlaylistLoadingScene] = useState<Scene | null>(null)
+  const [playlistTiming, setPlaylistTiming] = useState<PlaylistTimingDiagnostics>({})
+  const activationPresentationRef = useRef('')
+  const pendingActivationPresentationRef = useRef<{ generation: string; sequence: number; sceneId: string; activationAtMs: number } | null>(null)
   const reportedPreparationRef = useRef('')
   const preloadedLoadingRef = useRef('')
   const [liveSession, setLiveSession] = useState<LiveSessionLease | null>(null)
@@ -179,6 +190,34 @@ export function Player() {
   const setMediaStatus = useCallback((layerId: string, nextStatus: string) => setMediaStates(current => current[layerId] === nextStatus ? current : { ...current, [layerId]: nextStatus }), [])
   const ignoreLiveSourceStatus = useCallback((_liveSourceId: string, _nextStatus: LiveDebugState) => undefined, [])
   const ignoreLiveSourceDiagnostic = useCallback((_liveSourceId: string, _update: LiveSourceDiagnostic) => undefined, [])
+  const queueActivationPresentation = useCallback((generation: string, sequence: number, sceneId: string, activationAtMs: number) => {
+    if (!debug) return
+    pendingActivationPresentationRef.current = { generation, sequence, sceneId, activationAtMs }
+  }, [debug])
+  const recordLoaderFadeStart = useCallback((actualServerNowMs: number, loadingAtMs: number) => {
+    if (!debug) return
+    const skew = playlistPresentationSkewMs(actualServerNowMs, loadingAtMs)
+    if (skew !== null) setPlaylistTiming(current => ({ ...current, loaderSkewMs: skew }))
+  }, [debug])
+
+  useEffect(() => {
+    if (!debug || !playlistRuntime?.generation) return
+    activationPresentationRef.current = ''
+    pendingActivationPresentationRef.current = null
+    setPlaylistTiming(current => ({ clockRoundTripMs: current.clockRoundTripMs, pollRoundTripMs: current.pollRoundTripMs }))
+  }, [debug, playlistRuntime?.generation, playlistRuntime?.sequence])
+
+  useLayoutEffect(() => {
+    const pending = pendingActivationPresentationRef.current
+    if (!debug || !pending || scene?.id !== pending.sceneId) return
+    const key = `${pending.generation}:${pending.sequence}:${pending.activationAtMs}`
+    pendingActivationPresentationRef.current = null
+    if (activationPresentationRef.current === key) return
+    const skew = playlistPresentationSkewMs(performance.now() + serverEpochOffsetMs, pending.activationAtMs)
+    if (skew === null) return
+    activationPresentationRef.current = key
+    setPlaylistTiming(current => ({ ...current, activationSkewMs: skew }))
+  }, [debug, scene?.id, serverEpochOffsetMs])
 
   useEffect(() => {
     if (!device || !supabase) return
@@ -198,12 +237,13 @@ export function Player() {
       if (!cancelled && samples.length) {
         samples.sort((a, b) => a.roundTripMs - b.roundTripMs)
         setServerEpochOffsetMs(samples[0].epochOffsetMs)
+        if (debug) setPlaylistTiming(current => ({ ...current, clockRoundTripMs: samples[0].roundTripMs }))
       }
     }
     void calibrateClock()
     const timer = window.setInterval(() => void calibrateClock(), 5 * 60 * 1000)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [device])
+  }, [device, debug])
 
   useEffect(() => {
     const refresh = window.setTimeout(() => location.reload(), 6 * 60 * 60 * 1000)
@@ -217,13 +257,19 @@ export function Player() {
     let lastHeartbeatAt = 0
     const client = supabase
     const refresh = async () => {
+      const pollStartedAt = performance.now()
       const { data, error } = await client.rpc('get_player_state', { requested_device_id: device.id, requested_token: device.token })
+      const pollRoundTripMs = performance.now() - pollStartedAt
       if (cancelled) return null
+      if (debug) setPlaylistTiming(current => ({ ...current, pollRoundTripMs }))
       if (error) { setStatus('Connection issue — retrying…'); return null }
       const runtime = data?.playlist_runtime as PlaylistRuntime | null
       const targetScene = data?.target_scene ? { ...data.target_scene, layers: data.target_scene.layers as SceneLayer[] } as Scene : null
       const activationRemaining = playlistActivationRemainingMs(runtime, performance.now() + serverEpochOffsetRef.current)
-      if (runtime?.phase === 'ARMED' && targetScene && activationRemaining === 0) setScene(targetScene)
+      if (runtime?.phase === 'ARMED' && targetScene && activationRemaining === 0) {
+        queueActivationPresentation(runtime.generation, runtime.sequence, targetScene.id, Date.parse(runtime.activation_at ?? ''))
+        setScene(targetScene)
+      }
       else if (data?.scene) setScene({ ...data.scene, layers: data.scene.layers as SceneLayer[] })
       else setScene(null)
       if (data?.devices) setWallDevices(data.devices as Device[])
@@ -252,18 +298,18 @@ export function Player() {
     const poll = async () => { const runtime = await refresh(); if (!cancelled) timer = window.setTimeout(() => void poll(), playlistPollIntervalMs(runtime)) }
     void poll()
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [device])
+  }, [device, debug, queueActivationPresentation])
 
   useEffect(() => {
     if (playlistRuntime?.phase !== 'ARMED' || !playlistRuntime.activation_at || !playlistTargetScene || playlistTargetScene.id !== playlistRuntime.target_scene_id) return
     const activationAt = Date.parse(playlistRuntime.activation_at)
     if (!Number.isFinite(activationAt)) return
-    const activate = () => { setScene(playlistTargetScene); setSceneStartedAtMs(activationAt) }
+    const activate = () => { queueActivationPresentation(playlistRuntime.generation, playlistRuntime.sequence, playlistTargetScene.id, activationAt); setScene(playlistTargetScene); setSceneStartedAtMs(activationAt) }
     const delay = Math.max(0, activationAt - (performance.now() + serverEpochOffsetRef.current))
     if (delay === 0) { activate(); return }
     const timer = window.setTimeout(activate, delay)
     return () => window.clearTimeout(timer)
-  }, [playlistRuntime?.generation, playlistRuntime?.sequence, playlistRuntime?.phase, playlistRuntime?.activation_at, playlistRuntime?.target_scene_id, playlistTargetScene?.id])
+  }, [playlistRuntime?.generation, playlistRuntime?.sequence, playlistRuntime?.phase, playlistRuntime?.activation_at, playlistRuntime?.target_scene_id, playlistTargetScene?.id, queueActivationPresentation])
 
   useEffect(() => {
     if (!device || !supabase || !playlistRuntime || playlistRuntime.phase !== 'PREPARING' || !playlistTargetScene || playlistTargetScene.id !== playlistRuntime.target_scene_id) return
@@ -462,11 +508,11 @@ export function Player() {
   const currentVirtualRegion = device && virtualWallGeometry?.status === 'valid' ? virtualWallGeometry.devices.find(region => region.deviceId === device.id) : undefined
   const currentDevice = device ? wallDevices.find(candidate => candidate.id === device.id) : undefined
   const geometryRows = geometryDebugRows(scene, virtualWallGeometry, v2Contract, currentVirtualRegion, { width: innerWidth, height: innerHeight })
-  const debugPanel = debug ? <PlayerDebugOverlay device={device} deviceName={currentDevice?.name ?? null} wallId={currentDevice?.wall_id ?? null} scene={scene} playlistRuntime={playlistRuntime} status={status} geometryRows={geometryRows} signalingStatus={signalingStatus} liveRows={liveDebugRows(scene?.layers ?? [], liveSessions.map(lease => lease.liveSourceId), liveSourceStates, liveStreams, liveSourceDiagnostics)} mediaRows={mediaDebugRows(scene?.layers ?? [], mediaStates)} health={playerHealthSummary({ scene, contract: v2Contract, status, signaling: signalingStatus })} webRtcConnectionState={webRtcConnectionState} iceConnectionState={iceConnectionState} /> : null
+  const debugPanel = debug ? <PlayerDebugOverlay device={device} deviceName={currentDevice?.name ?? null} wallId={currentDevice?.wall_id ?? null} scene={scene} playlistRuntime={playlistRuntime} playlistTiming={playlistTiming} status={status} geometryRows={geometryRows} signalingStatus={signalingStatus} liveRows={liveDebugRows(scene?.layers ?? [], liveSessions.map(lease => lease.liveSourceId), liveSourceStates, liveStreams, liveSourceDiagnostics)} mediaRows={mediaDebugRows(scene?.layers ?? [], mediaStates)} health={playerHealthSummary({ scene, contract: v2Contract, status, signaling: signalingStatus })} webRtcConnectionState={webRtcConnectionState} iceConnectionState={iceConnectionState} /> : null
   if (!isConfigured) return <main className="player-message">This player needs Supabase configuration.</main>
   if (!device) return <>{debugPanel}<main className="pairing"><form onSubmit={pair}><p className="eyebrow">SCREENMESH PLAYER</p><h1>Pair this screen</h1><p>Enter the one-time PIN from the dashboard.</p><input autoFocus inputMode="numeric" maxLength={6} value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))} placeholder="000000" /><button>Connect display</button><small>{status}</small></form></main></>
   if (safeMode) return <>{debugPanel}<main className="player-message" style={{ background: '#070a12', color: '#9bf6d2', fontFamily: 'monospace', textAlign: 'center' }}><div><strong>ScreenMesh player base is working</strong><br /><small>Scene media is intentionally disabled for this diagnostic.</small></div></main></>
   const liveRuntimes = liveSessions.map(lease => <PlayerLiveSession key={lease.sessionId} device={device} lease={lease} disabled={safeMode || videosDisabled} diagnosticsEnabled={debug} onStream={registerLiveStream} onRemove={removeLiveStream} onStatus={debug ? setLiveSourceStatus : ignoreLiveSourceStatus} onDiagnostic={debug ? setLiveSourceDiagnostic : ignoreLiveSourceDiagnostic} />)
   if (scene && v2Contract?.status === 'invalid') return <>{liveRuntimes}<main className="player-message">V2 geometry unavailable: {v2Contract.reason}</main>{debugPanel}</>
-  return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} onLivePresentationFps={debug ? setLivePresentationFps : undefined} /><PlaylistLoadingOverlay runtime={playlistRuntime} scene={playlistLoadingScene} deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} serverEpochOffsetMs={serverEpochOffsetMs} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
+  return scene ? <>{liveRuntimes}<ScenePreview scene={scene} player deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} serverEpochOffsetMs={serverEpochOffsetMs} sceneStartedAtMs={sceneStartedAtMs} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} onMediaStateChange={debug ? setMediaStatus : undefined} onLivePresentationFps={debug ? setLivePresentationFps : undefined} /><PlaylistLoadingOverlay runtime={playlistRuntime} scene={playlistLoadingScene} deviceId={device.id} devices={wallDevices} virtualWallGeometry={virtualWallGeometry} videosDisabled={videosDisabled} rawVideos={rawVideos} liveStreams={liveStreams} serverEpochOffsetMs={serverEpochOffsetMs} onLoaderFadeStart={debug ? recordLoaderFadeStart : undefined} />{debugPanel}</> : <>{liveRuntimes}<main className="player-message">{status}</main>{debugPanel}</>
 }

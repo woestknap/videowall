@@ -1,11 +1,19 @@
 import type { PlaylistRuntime, Scene } from '../types'
 
 export const PLAYLIST_TRANSITION_TIMEOUT_MS = 15_000
-export const PLAYLIST_ACTIVATION_LEAD_MS = 1_500
-export const PLAYLIST_LOADING_LEAD_MS = 900
+export const PLAYLIST_ACTIVATION_LEAD_MS = 2_000
+export const PLAYLIST_LOADING_LEAD_MS = 1_500
 export const PLAYLIST_NORMAL_POLL_MS = 4_000
 export const PLAYLIST_TRANSITION_POLL_MS = 400
 export const PLAYLIST_FADE_MS = 350
+
+export type PlaylistTimingDiagnostics = { loaderSkewMs?: number; activationSkewMs?: number; clockRoundTripMs?: number; pollRoundTripMs?: number }
+
+/** The presentation timestamp is already expressed in the calibrated server-time basis. */
+export function playlistPresentationSkewMs(actualServerNowMs: number, intendedServerAtMs: number) {
+  if (!Number.isFinite(actualServerNowMs) || !Number.isFinite(intendedServerAtMs)) return null
+  return Math.round(actualServerNowMs - intendedServerAtMs)
+}
 
 export type PlaylistLoadingOverlayState = { mounted: boolean; opacity: number; phase: 'HIDDEN' | 'WAITING' | 'FADING_IN' | 'VISIBLE' | 'FADING_OUT'; nextAtMs: number | null; animate: boolean }
 

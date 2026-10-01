@@ -1,5 +1,5 @@
 import type { PlaylistRuntime, Scene, SceneLayer } from '../types'
-import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistRemainingMs } from '../lib/playlistRuntime.ts'
+import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistRemainingMs, type PlaylistTimingDiagnostics } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { compactMetric, type ReceiverPerformanceStats } from '../lib/livePerformanceStats.ts'
 
@@ -106,7 +106,9 @@ export function mediaDebugRows(layers: SceneLayer[], states: Readonly<Record<str
   return rows
 }
 
-export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.now()): DebugRow[] {
+function formatSignedMilliseconds(value: number) { return `${value >= 0 ? '+' : ''}${Math.round(value)} ms` }
+
+export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.now(), timing: PlaylistTimingDiagnostics = {}): DebugRow[] {
   if (!runtime || runtime.status === 'STOPPED') return [{ label: 'Playlist', value: 'STOPPED' }]
   const rows: DebugRow[] = [
     { label: 'Playlist', value: runtime.playlist_name },
@@ -126,6 +128,10 @@ export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.
     rows.push({ label: 'Target', value: runtime.target_scene_name ?? shortDebugId(runtime.target_scene_id) })
     rows.push({ label: 'Starts in', value: formatPlaylistActivationRemaining(playlistActivationRemainingMs(runtime, nowMs)) })
   } else rows.push({ label: 'Next', value: formatPlaylistRemaining(playlistRemainingMs(runtime, nowMs)) })
+  if (timing.loaderSkewMs !== undefined) rows.push({ label: 'Loader skew', value: formatSignedMilliseconds(timing.loaderSkewMs) })
+  if (timing.activationSkewMs !== undefined) rows.push({ label: 'Activation skew', value: formatSignedMilliseconds(timing.activationSkewMs) })
+  if (timing.clockRoundTripMs !== undefined) rows.push({ label: 'Clock RTT', value: `${Math.round(timing.clockRoundTripMs)} ms` })
+  if (timing.pollRoundTripMs !== undefined) rows.push({ label: 'Poll RTT', value: `${Math.round(timing.pollRoundTripMs)} ms` })
   if (runtime.degraded) rows.push({ label: 'Transition', value: 'DEGRADED', detail: `${runtime.failed_device_ids.length} player(s) missed readiness` })
   return rows
 }

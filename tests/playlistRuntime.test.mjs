@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, playlistRemainingMs, playlistRuntimeLabel } from '../src/lib/playlistRuntime.ts'
+import { formatPlaylistActivationRemaining, formatPlaylistRemaining, PLAYLIST_ACTIVATION_LEAD_MS, PLAYLIST_LOADING_LEAD_MS, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, playlistPresentationSkewMs, playlistRemainingMs, playlistRuntimeLabel } from '../src/lib/playlistRuntime.ts'
 
 const runtime = {
   wall_id: 'wall', playlist_id: 'playlist', playlist_name: 'Morning', status: 'PLAYING', phase: 'DISPLAYING',
@@ -139,6 +139,17 @@ test('corrective loading-overlay migration preserves the current wall scene unti
   assert.match(sql, /degraded = cardinality\(failed\) > 0[\s\S]*arm_playlist_transition_locked/is)
 })
 
+test('timing-margin migration extends loader and activation lead without changing polling', async () => {
+  const sql = await readFile(new URL('../supabase/migrations/20261001090000_playlist_timing_margin.sql', import.meta.url), 'utf8')
+  assert.equal(PLAYLIST_LOADING_LEAD_MS, 1_500)
+  assert.equal(PLAYLIST_ACTIVATION_LEAD_MS, 2_000)
+  assert.match(sql, /playlist_loading_lead_time\(\)[\s\S]*interval '1500 milliseconds'/i)
+  assert.match(sql, /playlist_activation_lead_time\(\)[\s\S]*interval '2000 milliseconds'/i)
+  assert.equal(playlistPollIntervalMs(runtime), 4_000)
+  assert.equal(playlistPollIntervalMs({ ...runtime, phase: 'PREPARING' }), 400)
+  assert.equal(playlistPollIntervalMs({ ...runtime, phase: 'ARMED' }), 400)
+})
+
 test('players use transition-only fast polling and deterministic activation helpers', () => {
   const armed = { ...runtime, phase: 'ARMED', activation_at: '2026-09-28T10:00:01.500Z' }
   assert.equal(playlistPollIntervalMs(runtime), 4000)
@@ -185,6 +196,13 @@ test('loading overlay timing is deterministic for normal, late, and reduced-moti
   assert.deepEqual(playlistLoadingOverlayState(displaying, Date.parse('2026-09-28T10:00:10.000Z')), { phase: 'HIDDEN', mounted: false, opacity: 0, nextAtMs: null, animate: false })
   assert.equal(playlistLoadingOverlayState(armed, Date.parse('2026-09-28T10:00:02.000Z'), true).phase, 'VISIBLE')
   assert.equal(playlistLoadingOverlayState(displaying, Date.parse(activationAt), true).phase, 'HIDDEN')
+})
+
+test('presentation skew compares calibrated server-time timestamps safely', () => {
+  assert.equal(playlistPresentationSkewMs(1_523, 1_500), 23)
+  assert.equal(playlistPresentationSkewMs(1_492, 1_500), -8)
+  assert.equal(playlistPresentationSkewMs(Number.NaN, 1_500), null)
+  assert.equal(playlistPresentationSkewMs(1_500, Number.NaN), null)
 })
 
 test('loading, expected-player readiness, timeout degradation and catch-up are encoded', async () => {
