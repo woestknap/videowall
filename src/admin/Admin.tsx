@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { isConfigured, supabase } from '../lib/supabase'
 import { bounds, deviceRect } from '../lib/wallGeometry'
 import { ScenePreview } from '../rendering/ScenePreview'
-import type { Device, PlaylistRuntime, Scene, SceneLayer, Wall } from '../types'
+import type { Device, ManualSceneRuntime, PlaylistRuntime, Scene, SceneLayer, Wall } from '../types'
 import { MediaLibrary } from '../media/MediaLibrary'
 import { v2SceneCreateValues, virtualGeometryForWall } from '../lib/editorSceneGeometry'
 import { physicalDeviceSaveValues, resetPhysicalPositions } from '../lib/physicalWallLayout'
 import { PhysicalWallEditor } from './PhysicalWallEditor'
 import { PlaylistManager } from './PlaylistManager'
 import { scenesForWall, selectedSceneIdForWall } from '../lib/playlists'
+import { formatPlaylistActivationRemaining } from '../lib/playlistRuntime'
 
 const starterScene: Scene = {
   id: 'preview', name: 'Welcome', duration_seconds: 60,
@@ -60,6 +61,8 @@ export function Admin() {
   const [selectedSceneId, setSelectedSceneId] = useState<string>('')
   const [liveSceneId, setLiveSceneId] = useState<string>('')
   const [playlistRuntime, setPlaylistRuntime] = useState<PlaylistRuntime | null>(null)
+  const [manualRuntime, setManualRuntime] = useState<ManualSceneRuntime | null>(null)
+  const [clockNow, setClockNow] = useState(Date.now())
   const [pin, setPin] = useState<string>('')
   const [notice, setNotice] = useState('')
   const [physicalLayoutDirty, setPhysicalLayoutDirty] = useState(false)
@@ -69,6 +72,7 @@ export function Admin() {
   const liveScene = selectedWallScenes.find((scene) => scene.id === liveSceneId)
   const selectedVirtualGeometry = selectedWall ? virtualGeometryForWall(selectedWall, devices) : null
   const selectedSceneRevisionMismatch = selectedScene.geometry_version === 2 && selectedScene.wall_id === activeWall && selectedVirtualGeometry?.status === 'valid' && selectedScene.wall_geometry_revision !== selectedVirtualGeometry.geometryRevision
+  const selectedManualRuntime = manualRuntime?.target_scene_id === selectedScene.id ? manualRuntime : null
   const recentDeviceCount = devices.filter((device) => deviceStatus(device).tone === 'recent').length
   const includedDeviceCount = devices.filter((device) => device.included_in_wall !== false).length
 
@@ -96,6 +100,22 @@ export function Admin() {
     const timer = window.setInterval(refreshLiveScene, 2000)
     return () => window.clearInterval(timer)
   }, [activeWall])
+  useEffect(() => {
+    if (!supabase || !activeWall) { setManualRuntime(null); return }
+    let cancelled = false
+    const client = supabase
+    const refresh = async () => {
+      const { data, error } = await client.rpc('get_manual_scene_runtime', { requested_wall_id: activeWall })
+      if (!cancelled && !error) setManualRuntime(data as ManualSceneRuntime | null)
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), manualRuntime ? 400 : 4000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [activeWall, manualRuntime?.status])
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [])
   async function createWall() {
     const name = prompt('Wall name', 'Living room wall')?.trim()
     if (!name || !supabase) return
@@ -135,13 +155,30 @@ export function Admin() {
     setDevices((current) => current.map((item) => item.id === device.id ? { ...item, name: newName } : item))
     setNotice(`Device renamed to ${newName}.`)
   }
-  async function goLive(scene: Scene) {
+  async function beginManualPreparation(scene: Scene) {
+    if (!supabase || !activeWall || scene.id === 'preview') return
+    if (scene.id === liveSceneId) { setManualRuntime(null); return setNotice(`${scene.name} is already live.`) }
+    const { data, error } = await supabase.rpc('begin_manual_scene_preparation', { requested_wall_id: activeWall, requested_scene_id: scene.id })
+    if (error) return setNotice(error.message)
+    setManualRuntime(data as ManualSceneRuntime | null)
+    setNotice(data ? `Preparing ${scene.name} on active players.` : `${scene.name} is already live.`)
+  }
+  async function goLive(scene: Scene, force = false) {
     if (!supabase || !activeWall || scene.id === 'preview') return setNotice('Create and save a scene first.')
     if (scene.geometry_version === 2 && scene.wall_id !== activeWall) return setNotice('This virtual-pixel scene belongs to a different wall.')
-    const { error } = await supabase.rpc('go_live_manual', { requested_wall_id: activeWall, requested_scene_id: scene.id })
-    if (!error) setLiveSceneId(scene.id)
-    if (!error) setPlaylistRuntime(current => current ? { ...current, status: 'STOPPED', phase: 'DISPLAYING' } : null)
-    setNotice(error ? error.message : `${scene.name} is live.`)
+    if (scene.id === liveSceneId) return setNotice(`${scene.name} is already live.`)
+    if (!selectedManualRuntime) { await beginManualPreparation(scene); return }
+    const { data, error } = await supabase.rpc('arm_manual_scene_activation', { requested_wall_id: activeWall, expected_generation: selectedManualRuntime.generation, force_activation: force })
+    if (error) return setNotice(error.message)
+    setManualRuntime(data as ManualSceneRuntime)
+    setPlaylistRuntime(current => current ? { ...current, status: 'STOPPED', phase: 'DISPLAYING' } : null)
+    setNotice(`${scene.name} is armed for synchronized activation.`)
+  }
+  async function cancelManualPreparation() {
+    if (!supabase || !activeWall || !selectedManualRuntime) return
+    const { error } = await supabase.rpc('cancel_manual_scene_preparation', { requested_wall_id: activeWall, expected_generation: selectedManualRuntime.generation })
+    if (error) return setNotice(error.message)
+    setManualRuntime(null); setNotice('Scene preparation cancelled.')
   }
   async function signOut() {
     if (!supabase) return
@@ -150,6 +187,8 @@ export function Admin() {
   }
   function selectPreviewScene(sceneId: string) {
     setSelectedSceneId(sceneId)
+    const scene = selectedWallScenes.find(candidate => candidate.id === sceneId)
+    if (scene) void beginManualPreparation(scene)
   }
   function updatePhysicalDevice(deviceId: string, change: Partial<Device>) {
     setDevices(current => current.map(device => device.id === deviceId ? { ...device, ...change, auto_size: false } : device))
@@ -218,10 +257,12 @@ export function Admin() {
       <div className="dashboard-section-heading"><div><p className="eyebrow">DAILY CONTROL</p><h2 id="output-scenes-heading">Current output + scenes</h2></div><p>Preview a scene, edit it, or send it to the selected wall.</p></div>
       <div className="dashboard-workspace">
         <article className="panel sm-card dashboard-preview-panel">
-          <div className="panel-heading"><div><p className="eyebrow">CURRENT OUTPUT</p><h3>{selectedScene.name}</h3></div><button className="sm-button" disabled={!activeWall || selectedScene.id === 'preview'} onClick={() => void goLive(selectedScene)}>Go live</button></div>
-          <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{selectedScene.id === liveSceneId && <span className="sm-status sm-status-success">Live now</span>}</div>
+          <div className="panel-heading"><div><p className="eyebrow">CURRENT OUTPUT</p><h3>{selectedScene.name}</h3></div><button className="sm-button" disabled={!activeWall || selectedScene.id === 'preview' || !selectedManualRuntime || selectedManualRuntime.status !== 'READY'} onClick={() => void goLive(selectedScene)}>Go live</button></div>
+          <div className="dashboard-output-status"><span className="sm-status sm-status-selected">Selected for preview</span>{selectedScene.id === liveSceneId && <span className="sm-status sm-status-success">Live now</span>}{selectedManualRuntime && <span className={`sm-status ${selectedManualRuntime.status === 'READY' ? 'sm-status-success' : 'sm-status-selected'}`}>{selectedManualRuntime.status} · {selectedManualRuntime.ready_device_ids.length} / {selectedManualRuntime.expected_device_ids.length} PLAYERS</span>}</div>
           {selectedSceneRevisionMismatch ? <p className="dashboard-wall-revision-message">Wall layout changed - <a href={`?editor=${selectedScene.id}`}>open scene to update</a>.</p> : <ScenePreview key={selectedScene.id} scene={selectedScene} devices={devices} virtualWallGeometry={selectedScene.wall_id === activeWall ? selectedVirtualGeometry : null} />}
           <p className="dashboard-current-live">{liveScene ? selectedScene.id === liveScene.id ? `${liveScene.name} is currently live on ${selectedWall?.name ?? 'this wall'}.` : <><strong>{liveScene.name}</strong> is currently live. Going live will replace it with <strong>{selectedScene.name}</strong>.</> : 'No scene is currently live on this wall.'}</p>
+          {selectedManualRuntime?.status === 'ARMED' && <p className="dashboard-current-live"><strong>Manual activation</strong> · Starts in {formatPlaylistActivationRemaining(selectedManualRuntime.activation_at ? Math.max(0, Date.parse(selectedManualRuntime.activation_at) - clockNow) : null)}</p>}
+          {selectedManualRuntime && selectedManualRuntime.status !== 'ARMED' && <div className="dashboard-scene-actions"><button className="sm-button sm-button-secondary" onClick={() => void cancelManualPreparation()}>Cancel preparation</button>{selectedManualRuntime.status === 'PREPARING' && <button className="sm-button sm-button-secondary" onClick={() => void goLive(selectedScene, true)}>Go live anyway</button>}</div>}
           {playlistRuntime && playlistRuntime.status !== 'STOPPED' && <p className="dashboard-current-live"><strong>Playlist: {playlistRuntime.playlist_name}</strong> · {playlistRuntime.status} · {playlistRuntime.phase} · {Math.max(0, playlistRuntime.current_index) + 1} / {playlistRuntime.item_count}</p>}
         </article>
 
@@ -237,7 +278,7 @@ export function Admin() {
             }}>
               <div className="dashboard-scene-card-heading"><strong className="scene-select">{scene.name}</strong><div>{selected && <span className="sm-status sm-status-selected">Selected</span>}{live && <span className="sm-status sm-status-success">Live now</span>}</div></div>
               <small>{scene.layers.length} layer{scene.layers.length === 1 ? '' : 's'} · {scene.duration_seconds}s · Geometry V{scene.geometry_version ?? 1}</small>
-              <div className="dashboard-scene-actions" onClick={(event) => event.stopPropagation()}><a className="sm-button sm-button-secondary" href={`?editor=${scene.id}`}>Edit</a><button className="sm-button" onClick={() => void goLive(scene)}>Go live</button><button className="sm-button sm-button-danger" onClick={() => void deleteScene(scene)}>Delete</button></div>
+              <div className="dashboard-scene-actions" onClick={(event) => event.stopPropagation()}><a className="sm-button sm-button-secondary" href={`?editor=${scene.id}`}>Edit</a><button className="sm-button" onClick={() => selectPreviewScene(scene.id)}>Prepare</button><button className="sm-button sm-button-danger" onClick={() => void deleteScene(scene)}>Delete</button></div>
             </div>
           })}</div> : <p className="dashboard-empty-state">No scenes belong to this wall yet. Unassigned legacy scenes are not shown.</p>}
         </article>

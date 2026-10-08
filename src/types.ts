@@ -146,3 +146,16 @@ export type PlaylistRuntime = {
   degraded: boolean
   updated_at: string
 }
+
+export type ManualSceneRuntime = {
+  wall_id: string
+  generation: string
+  target_scene_id: string
+  status: 'PREPARING' | 'READY' | 'ARMED'
+  expected_device_ids: string[]
+  ready_device_ids: string[]
+  failed_device_ids: string[]
+  activation_at: string | null
+  created_at: string
+  updated_at: string
+}

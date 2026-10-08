@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { geometryDebugRows, liveDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId } from '../src/player/playerDebug.ts'
+import { geometryDebugRows, liveDebugRows, manualSceneDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId } from '../src/player/playerDebug.ts'
 
 const v1 = { id: 'scene', name: 'Legacy', layers: [], duration_seconds: 1 }
 const v2 = { ...v1, geometry_version: 2, canvas_width_px: 3362, canvas_height_px: 1831, wall_geometry_revision: 'current', layers: [{ id: 'live-layer', type: 'live', target: [], x: 0, y: 0, width: 1, height: 1, zIndex: 1, content: { liveSourceId: 'camera-a', liveSourceName: 'Camera A' } }] }
@@ -75,4 +75,13 @@ test('playlist diagnostics expose display, loader, and activation state without 
   const armedRows = playlistDebugRows({ ...runtime, phase: 'ARMED', activation_at: new Date(Date.now() + 1200).toISOString() })
   assert.equal(armedRows.find(row => row.label === 'Phase')?.value, 'ARMED')
   assert.match(armedRows.find(row => row.label === 'Starts in')?.value ?? '', /^00:0[01]\.[0-9]$/)
+})
+test('manual staging diagnostics expose compact stage, readiness, and activation skew', () => {
+  const runtime = { wall_id: 'wall', generation: '123456789012', target_scene_id: 'target-scene', status: 'ARMED', expected_device_ids: ['pi-a', 'pi-b'], ready_device_ids: ['pi-a'], failed_device_ids: ['pi-b'], activation_at: new Date(Date.now() + 1200).toISOString(), created_at: '', updated_at: '' }
+  const rows = manualSceneDebugRows(runtime, 'Scene B', Date.now(), { activationSkewMs: 12 })
+  assert.equal(rows.find(row => row.label === 'Manual stage')?.value, 'ARMED')
+  assert.equal(rows.find(row => row.label === 'Target')?.value, 'Scene B')
+  assert.equal(rows.find(row => row.label === 'Ready')?.value, '1 / 2')
+  assert.equal(rows.find(row => row.label === 'Activation skew')?.value, '+12 ms')
+  assert.equal(rows.find(row => row.label === 'Unavailable')?.value, '1')
 })

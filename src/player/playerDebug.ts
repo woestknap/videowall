@@ -1,4 +1,4 @@
-import type { PlaylistRuntime, Scene, SceneLayer } from '../types'
+import type { ManualSceneRuntime, PlaylistRuntime, Scene, SceneLayer } from '../types'
 import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistRemainingMs, type PlaylistTimingDiagnostics } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { compactMetric, type ReceiverPerformanceStats } from '../lib/livePerformanceStats.ts'
@@ -133,6 +133,19 @@ export function playlistDebugRows(runtime: PlaylistRuntime | null, nowMs = Date.
   if (timing.clockRoundTripMs !== undefined) rows.push({ label: 'Clock RTT', value: `${Math.round(timing.clockRoundTripMs)} ms` })
   if (timing.pollRoundTripMs !== undefined) rows.push({ label: 'Poll RTT', value: `${Math.round(timing.pollRoundTripMs)} ms` })
   if (runtime.degraded) rows.push({ label: 'Transition', value: 'DEGRADED', detail: `${runtime.failed_device_ids.length} player(s) missed readiness` })
+  return rows
+}
+
+export function manualSceneDebugRows(runtime: ManualSceneRuntime | null, targetName?: string, nowMs = Date.now(), timing: PlaylistTimingDiagnostics = {}): DebugRow[] {
+  if (!runtime) return [{ label: 'Manual stage', value: 'IDLE' }]
+  const rows: DebugRow[] = [
+    { label: 'Manual stage', value: runtime.status },
+    { label: 'Target', value: targetName ?? shortDebugId(runtime.target_scene_id) },
+    { label: 'Ready', value: `${runtime.ready_device_ids.length} / ${runtime.expected_device_ids.length}` },
+  ]
+  if (runtime.status === 'ARMED') rows.push({ label: 'Activation in', value: formatPlaylistActivationRemaining(runtime.activation_at ? Math.max(0, Date.parse(runtime.activation_at) - nowMs) : null) })
+  if (timing.activationSkewMs !== undefined) rows.push({ label: 'Activation skew', value: formatSignedMilliseconds(timing.activationSkewMs) })
+  if (runtime.failed_device_ids.length) rows.push({ label: 'Unavailable', value: String(runtime.failed_device_ids.length) })
   return rows
 }
 

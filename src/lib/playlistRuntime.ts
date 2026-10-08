@@ -98,7 +98,7 @@ function waitForVideo(url: string) {
 }
 
 /** Prepares static media without mounting or playing hidden scene runtimes. */
-export async function preparePlaylistScene(scene: Scene, videosDisabled = false) {
+export async function prepareScene(scene: Scene, videosDisabled = false) {
   const tasks = scene.layers.flatMap(layer => {
     const url = layer.content.url?.trim()
     if (!url || layer.type === 'live') return []

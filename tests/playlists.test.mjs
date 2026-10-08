@@ -95,7 +95,7 @@ test('wall-scoped scene selection excludes legacy scenes and clears foreign sele
 
 test('dashboard scene-card body selection is wired separately from wall state', async () => {
   const source = await readFile(new URL('../src/admin/Admin.tsx', import.meta.url), 'utf8')
-  assert.match(source, /function selectPreviewScene\(sceneId: string\)\s*\{\s*setSelectedSceneId\(sceneId\)\s*\}/)
+  assert.match(source, /function selectPreviewScene\(sceneId: string\)\s*\{\s*setSelectedSceneId\(sceneId\)/)
   assert.match(source, /const selectedScene = selectedWallScenes\.find\(\(scene\) => scene\.id === selectedSceneId\) \?\? starterScene/)
   assert.match(source, /const selected = scene\.id === selectedSceneId/)
   assert.match(source, /onClick=\{\(\) => selectPreviewScene\(scene\.id\)\}/)
@@ -144,10 +144,10 @@ test('reorder RPC validates the complete item set and persists collision-safe po
   assert.match(sql, /every playlist item exactly once/i)
 })
 
-test('dashboard selection is preview-only and both activation entry points use Go live', async () => {
+test('dashboard selection remains preview-first and stages a manual scene before Go live', async () => {
   const source = await readFile(new URL('../src/admin/Admin.tsx', import.meta.url), 'utf8')
   assert.match(source, /dashboard-scene-card[\s\S]*onClick=\{\(\) => selectPreviewScene\(scene\.id\)\}/)
-  assert.equal((source.match(/onClick=\{\(\) => void goLive\(/g) ?? []).length, 2)
-  assert.equal((source.match(/>Go live<\/button>/g) ?? []).length, 2)
+  assert.match(source, /onClick=\{\(\) => void goLive\(selectedScene\)\}/)
+  assert.match(source, />Prepare<\/button>/)
   assert.doesNotMatch(source, /Publish to wall|Publishing will replace/)
 })
