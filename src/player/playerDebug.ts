@@ -105,7 +105,7 @@ export function mediaDebugRows(layers: SceneLayer[], states: Readonly<Record<str
   const rows: DebugRow[] = [{ label: 'Images', value: String(images) }, { label: 'Videos', value: String(videos.length) }]
   for (const layer of videos) {
     const diagnostic = syncDiagnostics[layer.id]
-    const detail = diagnostic ? `drift=${Math.round(diagnostic.driftMs)}ms · rate=${diagnostic.playbackRate.toFixed(3)} · seeks=${diagnostic.hardSeekCount}${diagnostic.lastHardSeekAtMs === undefined ? '' : ` · last-seek=${Math.max(0, Math.floor((performance.now() - diagnostic.lastHardSeekAtMs) / 1000))}s ago`}` : undefined
+    const detail = diagnostic ? `drift=${Math.round(diagnostic.driftMs)}ms · rate=${diagnostic.playbackRate.toFixed(3)} · ${diagnostic.band} · seeks=${diagnostic.hardSeekCount}${diagnostic.lastHardSeekAtMs === undefined ? '' : ` · last-seek=${Math.max(0, Math.floor((performance.now() - diagnostic.lastHardSeekAtMs) / 1000))}s ago`}` : undefined
     rows.push({ label: `Video ${shortDebugId(layer.id)}`, value: states[layer.id] ?? 'LOADING', detail })
   }
   return rows

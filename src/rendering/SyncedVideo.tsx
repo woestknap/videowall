@@ -19,7 +19,7 @@ export function SyncedVideo({ style, src, muted, loop, serverEpochOffsetMs, scen
       video.currentTime = expectedPosition()
       video.playbackRate = 1
       lastHardSeekAtMs = performance.now()
-      syncDiagnosticRef.current?.({ driftMs: 0, playbackRate: 1, hardSeekCount })
+      syncDiagnosticRef.current?.({ driftMs: 0, playbackRate: 1, band: 'SYNCED', hardSeekCount })
       void video.play().catch(() => undefined)
     }
     const correctDrift = () => {
@@ -34,7 +34,7 @@ export function SyncedVideo({ style, src, muted, loop, serverEpochOffsetMs, scen
         hardSeekCount += 1
       }
       video.playbackRate = decision.playbackRate
-      syncDiagnosticRef.current?.({ driftMs: drift * 1000, playbackRate: decision.playbackRate, hardSeekCount, lastHardSeekAtMs: lastHardSeekAtMs ?? undefined })
+      syncDiagnosticRef.current?.({ driftMs: drift * 1000, playbackRate: decision.playbackRate, band: decision.band, hardSeekCount, lastHardSeekAtMs: lastHardSeekAtMs ?? undefined })
     }
     video.addEventListener('loadedmetadata', align)
     align()
