@@ -2,6 +2,7 @@ import type { ManualSceneRuntime, PlaylistRuntime, Scene, SceneLayer } from '../
 import { formatPlaylistActivationRemaining, formatPlaylistRemaining, playlistActivationRemainingMs, playlistLoadingOverlayState, playlistRemainingMs, type PlaylistTimingDiagnostics } from '../lib/playlistRuntime.ts'
 import type { V2SceneRenderContract, VirtualWallDeviceRegion, VirtualWallGeometryResult } from '../lib/virtualWallGeometry'
 import { compactMetric, type ReceiverPerformanceStats } from '../lib/livePerformanceStats.ts'
+import type { VideoSyncDiagnostics } from '../lib/videoSync.ts'
 
 export type DebugRow = { label: string; value: string; detail?: string }
 export type LiveDebugState = 'WAITING' | 'CONNECTING' | 'CONNECTED' | 'NEGOTIATING' | 'STREAMING' | 'RECONNECTING' | 'ENDED' | 'ERROR'
@@ -98,11 +99,15 @@ export function liveDebugRows(layers: SceneLayer[], leaseSourceIds: string[], st
   })
 }
 
-export function mediaDebugRows(layers: SceneLayer[], states: Readonly<Record<string, string>>): DebugRow[] {
+export function mediaDebugRows(layers: SceneLayer[], states: Readonly<Record<string, string>>, syncDiagnostics: Readonly<Record<string, VideoSyncDiagnostics>> = {}): DebugRow[] {
   const images = layers.filter(layer => layer.type === 'image').length
   const videos = layers.filter(layer => layer.type === 'video')
   const rows: DebugRow[] = [{ label: 'Images', value: String(images) }, { label: 'Videos', value: String(videos.length) }]
-  for (const layer of videos) rows.push({ label: `Video ${shortDebugId(layer.id)}`, value: states[layer.id] ?? 'LOADING' })
+  for (const layer of videos) {
+    const diagnostic = syncDiagnostics[layer.id]
+    const detail = diagnostic ? `drift=${Math.round(diagnostic.driftMs)}ms · rate=${diagnostic.playbackRate.toFixed(3)} · seeks=${diagnostic.hardSeekCount}${diagnostic.lastHardSeekAtMs === undefined ? '' : ` · last-seek=${Math.max(0, Math.floor((performance.now() - diagnostic.lastHardSeekAtMs) / 1000))}s ago`}` : undefined
+    rows.push({ label: `Video ${shortDebugId(layer.id)}`, value: states[layer.id] ?? 'LOADING', detail })
+  }
   return rows
 }
 

@@ -55,9 +55,12 @@ test('recovered sockets retain close history until a genuinely new session start
   assert.equal(replacement.socketState, 'CONNECTING')
 })
 test('media states remain compact and debug-disabled player rendering does not subscribe to them', () => {
-  assert.equal(mediaDebugRows([{ ...v2.layers[0], id: 'video', type: 'video' }], { video: 'PLAYING' }).find(row => row.label === 'Video video')?.value, 'PLAYING')
+  const video = mediaDebugRows([{ ...v2.layers[0], id: 'video', type: 'video' }], { video: 'PLAYING' }, { video: { driftMs: -42, playbackRate: .99, hardSeekCount: 2, lastHardSeekAtMs: performance.now() - 1_000 } }).find(row => row.label === 'Video video')
+  assert.equal(video?.value, 'PLAYING')
+  assert.match(video?.detail ?? '', /drift=-42ms.*rate=0\.990.*seeks=2.*last-seek=1s ago/)
   const player = readFileSync(new URL('../src/player/Player.tsx', import.meta.url), 'utf8')
   assert.match(player, /onMediaStateChange=\{debug \? setMediaStatus : undefined\}/)
+  assert.match(player, /onVideoSyncDiagnostic=\{debug \? setVideoSyncDiagnostic : undefined\}/)
   assert.match(player, /onStatus=\{debug \? setLiveSourceStatus : ignoreLiveSourceStatus\}/)
 })
 test('playlist diagnostics expose display, loader, and activation state without secrets', () => {
