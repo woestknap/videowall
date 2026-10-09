@@ -9,6 +9,7 @@ import { parseVirtualWallGeometry, sceneGeometryVersion, validateV2SceneRender, 
 import { geometryDebugRows, liveDebugRows, manualSceneDebugRows, mediaDebugRows, mergeLiveSourceDiagnostic, playerHealthSummary, playlistDebugRows, shortDebugId, type DebugRow, type LiveDebugState, type LiveSourceDiagnostic } from './playerDebug'
 import { playlistActivationRemainingMs, playlistLoadingOverlayState, playlistPollIntervalMs, playlistPresentationSkewMs, prepareScene, type PlaylistLoadingOverlayState, type PlaylistTimingDiagnostics } from '../lib/playlistRuntime'
 import { manualSceneActivationRemainingMs, manualScenePollIntervalMs } from '../lib/manualSceneRuntime'
+import { createScenePreparationAttempt, scenePreparationNeedsReport, scenePreparationNeedsStart, type ScenePreparationAttempt, type ScenePreparationOutcome } from '../lib/scenePreparation'
 import { liveSessionConnectionIdentity, liveSessionLeaseIsActive } from '../lib/liveSessionConnection'
 import { mergeStatsReports, normalizeReceiverStats } from '../lib/livePerformanceStats'
 
@@ -163,8 +164,16 @@ export function Player() {
   const [playlistTiming, setPlaylistTiming] = useState<PlaylistTimingDiagnostics>({})
   const activationPresentationRef = useRef('')
   const pendingActivationPresentationRef = useRef<{ generation: string; sequence: number; sceneId: string; activationAtMs: number } | null>(null)
-  const reportedPreparationRef = useRef('')
-  const reportedManualPreparationRef = useRef('')
+  const playlistPreparationRef = useRef<ScenePreparationAttempt | null>(null)
+  const manualPreparationRef = useRef<ScenePreparationAttempt | null>(null)
+  const playlistRuntimeRef = useRef<PlaylistRuntime | null>(null)
+  const playlistTargetSceneRef = useRef<Scene | null>(null)
+  const manualSceneRuntimeRef = useRef<ManualSceneRuntime | null>(null)
+  const manualTargetSceneRef = useRef<Scene | null>(null)
+  playlistRuntimeRef.current = playlistRuntime
+  playlistTargetSceneRef.current = playlistTargetScene
+  manualSceneRuntimeRef.current = manualSceneRuntime
+  manualTargetSceneRef.current = manualTargetScene
   const preloadedLoadingRef = useRef('')
   const [liveSession, setLiveSession] = useState<LiveSessionLease | null>(null)
   const [liveSessions, setLiveSessions] = useState<LiveSessionLease[]>([])
@@ -327,32 +336,81 @@ export function Player() {
 
   useEffect(() => {
     if (!device || !supabase || !playlistRuntime || playlistRuntime.phase !== 'PREPARING' || !playlistTargetScene || playlistTargetScene.id !== playlistRuntime.target_scene_id) return
+    const client = supabase
     const preparationKey = `${playlistRuntime.generation}:${playlistRuntime.sequence}:${playlistTargetScene.id}`
-    if (reportedPreparationRef.current === preparationKey) return
-    reportedPreparationRef.current = preparationKey
     let cancelled = false
-    void prepareScene(playlistTargetScene, videosDisabled).then(async () => {
-      if (!cancelled && supabase) await supabase.rpc('report_playlist_ready', { requested_device_id: device.id, requested_token: device.token, expected_generation: playlistRuntime.generation, expected_sequence: playlistRuntime.sequence, expected_target_scene_id: playlistTargetScene.id, readiness_state: 'READY', readiness_detail: null })
-    }).catch(async error => {
-      if (!cancelled && supabase) await supabase.rpc('report_playlist_ready', { requested_device_id: device.id, requested_token: device.token, expected_generation: playlistRuntime.generation, expected_sequence: playlistRuntime.sequence, expected_target_scene_id: playlistTargetScene.id, readiness_state: 'ERROR', readiness_detail: error instanceof Error ? error.message : 'media-preparation-failed' })
-    })
-    return () => { cancelled = true }
-  }, [device, playlistRuntime?.generation, playlistRuntime?.sequence, playlistRuntime?.phase, playlistRuntime?.target_scene_id, playlistTargetScene, videosDisabled])
+    let retryTimer = 0
+    const canReport = () => {
+      const runtime = playlistRuntimeRef.current
+      return runtime?.phase === 'PREPARING' && runtime.generation === playlistRuntime.generation && runtime.sequence === playlistRuntime.sequence && runtime.target_scene_id === playlistTargetScene.id
+    }
+    const report = async () => {
+      const attempt = playlistPreparationRef.current
+      if (cancelled || attempt?.key !== preparationKey || !canReport() || !scenePreparationNeedsReport(attempt)) return
+      attempt.reporting = true
+      const outcome = attempt.outcome as ScenePreparationOutcome
+      const { error } = await client.rpc('report_playlist_ready', { requested_device_id: device.id, requested_token: device.token, expected_generation: playlistRuntime.generation, expected_sequence: playlistRuntime.sequence, expected_target_scene_id: playlistTargetScene.id, readiness_state: outcome, readiness_detail: attempt.detail })
+      if (cancelled || playlistPreparationRef.current?.key !== preparationKey) return
+      attempt.reporting = false
+      if (!error) { attempt.reported = true; return }
+      retryTimer = window.setTimeout(() => void report(), 1_000)
+    }
+    let attempt = playlistPreparationRef.current
+    if (scenePreparationNeedsStart(attempt, preparationKey)) {
+      const preparationAttempt = createScenePreparationAttempt(preparationKey)
+      attempt = preparationAttempt
+      playlistPreparationRef.current = preparationAttempt
+      void prepareScene(playlistTargetSceneRef.current ?? playlistTargetScene, videosDisabled).then(() => {
+        if (cancelled || playlistPreparationRef.current !== preparationAttempt) return
+        preparationAttempt.outcome = 'READY'
+        void report()
+      }).catch(error => {
+        if (cancelled || playlistPreparationRef.current !== preparationAttempt) return
+        preparationAttempt.outcome = 'ERROR'
+        preparationAttempt.detail = error instanceof Error ? error.message : 'media-preparation-failed'
+        void report()
+      })
+    } else void report()
+    return () => { cancelled = true; window.clearTimeout(retryTimer); if (playlistPreparationRef.current === attempt && !attempt?.outcome) playlistPreparationRef.current = null }
+  }, [device?.id, device?.token, playlistRuntime?.generation, playlistRuntime?.sequence, playlistRuntime?.target_scene_id, playlistTargetScene?.id, videosDisabled])
 
   useEffect(() => {
-    if (!device || !supabase || !manualSceneRuntime || !manualTargetScene || manualTargetScene.id !== manualSceneRuntime.target_scene_id || !['PREPARING', 'READY'].includes(manualSceneRuntime.status)) return
+    if (!device || !supabase || !manualSceneRuntime || !['PREPARING', 'READY'].includes(manualSceneRuntime.status) || !manualTargetScene || manualTargetScene.id !== manualSceneRuntime.target_scene_id) return
     const client = supabase
     const preparationKey = `${manualSceneRuntime.generation}:${manualTargetScene.id}`
-    if (reportedManualPreparationRef.current === preparationKey) return
-    reportedManualPreparationRef.current = preparationKey
     let cancelled = false
-    void prepareScene(manualTargetScene, videosDisabled).then(async () => {
-      if (!cancelled && manualSceneRuntime.status === 'PREPARING') await client.rpc('report_manual_scene_ready', { requested_device_id: device.id, requested_token: device.token, expected_generation: manualSceneRuntime.generation, expected_target_scene_id: manualTargetScene.id, readiness_state: 'READY' })
-    }).catch(async () => {
-      if (!cancelled && manualSceneRuntime.status === 'PREPARING') await client.rpc('report_manual_scene_ready', { requested_device_id: device.id, requested_token: device.token, expected_generation: manualSceneRuntime.generation, expected_target_scene_id: manualTargetScene.id, readiness_state: 'ERROR' })
-    })
-    return () => { cancelled = true }
-  }, [device, manualSceneRuntime?.generation, manualSceneRuntime?.status, manualSceneRuntime?.target_scene_id, manualTargetScene, videosDisabled])
+    let retryTimer = 0
+    const canReport = () => {
+      const runtime = manualSceneRuntimeRef.current
+      return runtime?.status === 'PREPARING' && runtime.generation === manualSceneRuntime.generation && runtime.target_scene_id === manualTargetScene.id
+    }
+    const report = async () => {
+      const attempt = manualPreparationRef.current
+      if (cancelled || attempt?.key !== preparationKey || !canReport() || !scenePreparationNeedsReport(attempt)) return
+      attempt.reporting = true
+      const { error } = await client.rpc('report_manual_scene_ready', { requested_device_id: device.id, requested_token: device.token, expected_generation: manualSceneRuntime.generation, expected_target_scene_id: manualTargetScene.id, readiness_state: attempt.outcome as ScenePreparationOutcome })
+      if (cancelled || manualPreparationRef.current?.key !== preparationKey) return
+      attempt.reporting = false
+      if (!error) { attempt.reported = true; return }
+      retryTimer = window.setTimeout(() => void report(), 1_000)
+    }
+    let attempt = manualPreparationRef.current
+    if (scenePreparationNeedsStart(attempt, preparationKey)) {
+      const preparationAttempt = createScenePreparationAttempt(preparationKey)
+      attempt = preparationAttempt
+      manualPreparationRef.current = preparationAttempt
+      void prepareScene(manualTargetSceneRef.current ?? manualTargetScene, videosDisabled).then(() => {
+        if (cancelled || manualPreparationRef.current !== preparationAttempt) return
+        preparationAttempt.outcome = 'READY'
+        void report()
+      }).catch(() => {
+        if (cancelled || manualPreparationRef.current !== preparationAttempt) return
+        preparationAttempt.outcome = 'ERROR'
+        void report()
+      })
+    } else void report()
+    return () => { cancelled = true; window.clearTimeout(retryTimer); if (manualPreparationRef.current === attempt && !attempt?.outcome) manualPreparationRef.current = null }
+  }, [device?.id, device?.token, manualSceneRuntime?.generation, manualSceneRuntime?.target_scene_id, manualTargetScene?.id, videosDisabled])
 
   useEffect(() => {
     if (manualSceneRuntime?.status !== 'ARMED' || !manualSceneRuntime.activation_at || !manualTargetScene || manualTargetScene.id !== manualSceneRuntime.target_scene_id) return

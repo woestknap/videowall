@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { manualSceneActivationRemainingMs, manualSceneIsReadyForActivation, manualScenePollIntervalMs } from '../src/lib/manualSceneRuntime.ts'
+import { createScenePreparationAttempt, scenePreparationNeedsReport, scenePreparationNeedsStart } from '../src/lib/scenePreparation.ts'
 
 const runtime = {
   wall_id: 'wall', generation: 'generation', target_scene_id: 'scene-b', status: 'PREPARING',
@@ -17,6 +18,21 @@ test('manual staging only uses fast polling while a runtime exists', () => {
   assert.equal(manualSceneActivationRemainingMs(armed, Date.parse('2026-10-08T10:00:03.000Z')), 0)
   assert.equal(manualSceneIsReadyForActivation({ ...runtime, status: 'READY' }, 'scene-b'), true)
   assert.equal(manualSceneIsReadyForActivation({ ...runtime, status: 'PREPARING' }, 'scene-b'), false)
+})
+
+test('scene preparation keeps one stable attempt until readiness reporting succeeds', () => {
+  const key = 'generation-a:scene-a'
+  const attempt = createScenePreparationAttempt(key)
+  assert.equal(scenePreparationNeedsStart(attempt, key), false)
+  assert.equal(scenePreparationNeedsStart(attempt, 'generation-b:scene-a'), true)
+  assert.equal(scenePreparationNeedsReport(attempt), false)
+  attempt.outcome = 'READY'
+  assert.equal(scenePreparationNeedsReport(attempt), true)
+  attempt.reporting = true
+  assert.equal(scenePreparationNeedsReport(attempt), false)
+  attempt.reporting = false
+  attempt.reported = true
+  assert.equal(scenePreparationNeedsReport(attempt), false)
 })
 
 test('manual-stage migration keeps preparation separate from wall_state and playlist runtime', async () => {
@@ -47,7 +63,13 @@ test('player prepares manual targets offscreen, reports only current generations
   const runtimeHelper = await readFile(new URL('../src/lib/playlistRuntime.ts', import.meta.url), 'utf8')
   assert.match(runtimeHelper, /export async function prepareScene/)
   assert.match(player, /report_manual_scene_ready/)
-  assert.match(player, /manualSceneRuntime\.status === 'PREPARING'/)
+  assert.match(player, /runtime\?\.status === 'PREPARING'/)
+  assert.match(player, /manualTargetSceneRef/)
+  assert.match(player, /scenePreparationNeedsStart/)
+  assert.match(player, /setTimeout\(\(\) => void report\(\), 1_000\)/)
+  const manualPreparationEffect = player.slice(player.indexOf("const preparationKey = `${manualSceneRuntime.generation}"), player.indexOf("useEffect(() => {\n    if (manualSceneRuntime?.status !== 'ARMED'"))
+  assert.match(manualPreparationEffect, /manualTargetScene\?\.id/)
+  assert.match(manualPreparationEffect, /\[device\?\.id, device\?\.token, manualSceneRuntime\?\.generation, manualSceneRuntime\?\.target_scene_id, manualTargetScene\?\.id, videosDisabled\]/)
   assert.match(player, /manualSceneActivationRemainingMs/)
   assert.match(player, /advance_manual_scene_if_due/)
   assert.doesNotMatch(player, /manual.*fade/i)
